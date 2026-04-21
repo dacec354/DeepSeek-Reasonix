@@ -186,11 +186,13 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(msgs2.length).toBeGreaterThan(msgs1.length);
   });
 
-  it("surfaces an error event when the HTTP call fails", async () => {
-    const errFetch = vi.fn(async () => new Response("boom", { status: 500 }));
+  it("surfaces an error event when the HTTP call fails with a non-retryable status", async () => {
+    // 401 is non-retryable (bad key). Using this avoids multi-retry waits.
+    const errFetch = vi.fn(async () => new Response("boom", { status: 401 }));
     const client = new DeepSeekClient({
       apiKey: "sk-test",
       fetch: errFetch as unknown as typeof fetch,
+      retry: { initialBackoffMs: 1, maxAttempts: 1 },
     });
     const loop = new CacheFirstLoop({
       client,

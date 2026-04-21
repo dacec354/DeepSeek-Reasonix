@@ -38,6 +38,9 @@ export type { TypedPlanState } from "./harvest.js";
 
 export { loadDotenv } from "./env.js";
 
+export { fetchWithRetry } from "./retry.js";
+export type { RetryOptions, RetryInfo } from "./retry.js";
+
 export type {
   ChatMessage,
   ToolCall,

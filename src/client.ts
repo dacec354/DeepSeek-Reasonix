@@ -1,4 +1,5 @@
 import { type EventSourceMessage, createParser } from "eventsource-parser";
+import { type RetryOptions, fetchWithRetry } from "./retry.js";
 import type { ChatMessage, ChatRequestOptions, RawUsage, ToolCall, ToolSpec } from "./types.js";
 
 export class Usage {
@@ -49,12 +50,15 @@ export interface DeepSeekClientOptions {
   baseUrl?: string;
   timeoutMs?: number;
   fetch?: typeof fetch;
+  /** Retry configuration. Pass `{ maxAttempts: 1 }` to disable retries. */
+  retry?: RetryOptions;
 }
 
 export class DeepSeekClient {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly timeoutMs: number;
+  readonly retry: RetryOptions;
   private readonly _fetch: typeof fetch;
 
   constructor(opts: DeepSeekClientOptions = {}) {
@@ -72,6 +76,7 @@ export class DeepSeekClient {
     ).replace(/\/+$/, "");
     this.timeoutMs = opts.timeoutMs ?? 120_000;
     this._fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
+    this.retry = opts.retry ?? {};
   }
 
   private buildPayload(opts: ChatRequestOptions, stream: boolean) {
@@ -92,15 +97,20 @@ export class DeepSeekClient {
     const signal = opts.signal ?? ctrl.signal;
 
     try {
-      const resp = await this._fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
+      const resp = await fetchWithRetry(
+        this._fetch,
+        `${this.baseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(this.buildPayload(opts, false)),
+          signal,
         },
-        body: JSON.stringify(this.buildPayload(opts, false)),
-        signal,
-      });
+        { ...this.retry, signal },
+      );
       if (!resp.ok) {
         throw new Error(`DeepSeek ${resp.status}: ${await resp.text()}`);
       }
@@ -125,16 +135,24 @@ export class DeepSeekClient {
 
     let resp: Response;
     try {
-      resp = await this._fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
+      // Only the initial fetch is retried. Once the server has started sending
+      // the stream body we do NOT retry — a mid-stream retry would re-bill and
+      // desync the session context.
+      resp = await fetchWithRetry(
+        this._fetch,
+        `${this.baseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body: JSON.stringify(this.buildPayload(opts, true)),
+          signal,
         },
-        body: JSON.stringify(this.buildPayload(opts, true)),
-        signal,
-      });
+        { ...this.retry, signal },
+      );
     } catch (err) {
       clearTimeout(timer);
       throw err;
