@@ -26,6 +26,7 @@ import {
   type ToolDefinition,
   ToolRegistry,
   type ToolSpec,
+  Usage,
 } from "../../src/index.js";
 import type { Turn } from "./types.js";
 
@@ -37,10 +38,26 @@ export interface BaselineRunnerOptions {
   maxToolIters?: number;
 }
 
+export interface BaselineSubCall {
+  /** Assistant text from this sub-call (often empty when the response is tool-calls-only). */
+  content: string;
+  /** Usage for this single client.chat() call. */
+  usage: Usage;
+  /** Tools the model chose to call on the back of this response. */
+  toolCalls: { name: string; args: string; result: string }[];
+}
+
 export interface BaselineTurnResult {
   assistantMessage: string;
   toolCallsExecuted: { name: string; args: string; result: string }[];
-  /** Turn number (1-based) assigned by the agent. Lets callers filter this.stats.turns for per-turn usage. */
+  /**
+   * Per-sub-call breakdown, one entry per client.chat() invocation. Gives
+   * downstream tools (bench transcripts) the same granularity as Reasonix
+   * loop events — without it, diff can't compare model-call counts
+   * apples-to-apples.
+   */
+  subCalls: BaselineSubCall[];
+  /** Turn number (1-based) assigned by the agent. */
   turnNo: number;
 }
 
@@ -87,6 +104,7 @@ export class BaselineAgent {
     this.history.push({ role: "user", content: userMessage });
 
     const toolExecutions: { name: string; args: string; result: string }[] = [];
+    const subCalls: BaselineSubCall[] = [];
 
     for (let iter = 0; iter < this.maxToolIters; iter++) {
       // Naive pattern #3: always rebuild the full message array.
@@ -104,18 +122,22 @@ export class BaselineAgent {
       this.history.push(assistantMessage);
 
       if (resp.toolCalls.length === 0) {
+        subCalls.push({ content: resp.content, usage: resp.usage, toolCalls: [] });
         return {
           assistantMessage: resp.content,
           toolCallsExecuted: toolExecutions,
+          subCalls,
           turnNo: this.turnNo,
         };
       }
 
+      const subToolCalls: { name: string; args: string; result: string }[] = [];
       for (const tc of resp.toolCalls) {
         const name = tc.function?.name ?? "";
         const args = tc.function?.arguments ?? "{}";
         const result = await this.registry.dispatch(name, args);
         toolExecutions.push({ name, args, result });
+        subToolCalls.push({ name, args, result });
         this.history.push({
           role: "tool",
           tool_call_id: tc.id ?? "",
@@ -123,12 +145,14 @@ export class BaselineAgent {
           content: result,
         });
       }
+      subCalls.push({ content: resp.content, usage: resp.usage, toolCalls: subToolCalls });
     }
 
     const lastAssistant = [...this.history].reverse().find((m) => m.role === "assistant");
     return {
       assistantMessage: lastAssistant?.content ?? "[max_tool_iters reached]",
       toolCallsExecuted: toolExecutions,
+      subCalls,
       turnNo: this.turnNo,
     };
   }

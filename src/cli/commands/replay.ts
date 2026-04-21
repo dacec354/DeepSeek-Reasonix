@@ -35,7 +35,7 @@ export function replayCommand(opts: ReplayOptions): void {
 
   console.log("");
   console.log("── summary ─────────────────────────────────────────");
-  console.log(`turns (assistant):   ${stats.turns}`);
+  console.log(`model calls:         ${stats.turns}`);
   console.log(`user turns:          ${stats.userTurns}`);
   console.log(`tool calls:          ${stats.toolCalls}`);
   console.log(`cache hit:           ${(stats.cacheHitRatio * 100).toFixed(1)}%`);

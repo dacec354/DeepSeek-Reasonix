@@ -21,17 +21,11 @@ import {
   DeepSeekClient,
   ImmutablePrefix,
   ToolRegistry,
-  Usage,
   claudeEquivalentCost,
   costUsd,
   loadDotenv,
 } from "../../src/index.js";
-import {
-  openTranscriptFile,
-  recordFromLoopEvent,
-  type TranscriptRecord,
-  writeRecord,
-} from "../../src/transcript.js";
+import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../src/transcript.js";
 import { BaselineAgent } from "./baseline.js";
 import { cloneDb } from "./db.js";
 import { TASKS } from "./tasks.js";
@@ -160,42 +154,40 @@ async function runBaseline(ctx: RunContext): Promise<RunResult> {
   return runAgentLoop(ctx, "baseline", async (userMsg, transcript) => {
     const res = await agent.userTurn(userMsg, transcript);
 
-    // Synthesize TranscriptRecords for the baseline turn. Unlike Reasonix
-    // (LoopEvent stream), baseline doesn't emit events — we reconstruct:
-    //   - one "tool" record per executed tool call, with args
-    //   - one "assistant_final" record with summed usage across all sub-calls
-    //     the baseline made for this user turn
+    // Emit one assistant_final + its tool records per sub-call, mirroring
+    // Reasonix's per-model-call granularity. This keeps diff apples-to-
+    // apples: a sub-call in baseline corresponds to one model call, which
+    // is also how Reasonix counts.
     if (transcriptStream) {
-      const ts = new Date().toISOString();
-      for (const te of res.toolCallsExecuted) {
-        const rec: TranscriptRecord = {
+      for (const sc of res.subCalls) {
+        const ts = new Date().toISOString();
+        writeRecord(transcriptStream, {
           ts,
           turn: res.turnNo,
-          role: "tool",
-          content: te.result,
-          tool: te.name,
-          args: te.args,
-        };
-        writeRecord(transcriptStream, rec);
+          role: "assistant_final",
+          content: sc.content,
+          usage: {
+            prompt_tokens: sc.usage.promptTokens,
+            completion_tokens: sc.usage.completionTokens,
+            total_tokens: sc.usage.totalTokens,
+            prompt_cache_hit_tokens: sc.usage.promptCacheHitTokens,
+            prompt_cache_miss_tokens: sc.usage.promptCacheMissTokens,
+          },
+          cost: costUsd(args.model, sc.usage),
+          model: args.model,
+          // No prefixHash: baseline's prefix churns by design.
+        });
+        for (const tc of sc.toolCalls) {
+          writeRecord(transcriptStream, {
+            ts,
+            turn: res.turnNo,
+            role: "tool",
+            content: tc.result,
+            tool: tc.name,
+            args: tc.args,
+          });
+        }
       }
-      const turnUsage = aggregateBaselineTurnUsage(agent, res.turnNo);
-      const rec: TranscriptRecord = {
-        ts,
-        turn: res.turnNo,
-        role: "assistant_final",
-        content: res.assistantMessage,
-        usage: {
-          prompt_tokens: turnUsage.promptTokens,
-          completion_tokens: turnUsage.completionTokens,
-          total_tokens: turnUsage.totalTokens,
-          prompt_cache_hit_tokens: turnUsage.promptCacheHitTokens,
-          prompt_cache_miss_tokens: turnUsage.promptCacheMissTokens,
-        },
-        cost: costUsd(args.model, turnUsage),
-        model: args.model,
-        // No prefixHash: baseline's prefix churns by design.
-      };
-      writeRecord(transcriptStream, rec);
     }
 
     return {
@@ -210,19 +202,6 @@ async function runBaseline(ctx: RunContext): Promise<RunResult> {
       completionTokens: sumTokens(agent.stats.turns.map((t) => t.usage.completionTokens)),
     };
   });
-}
-
-function aggregateBaselineTurnUsage(agent: BaselineAgent, turnNo: number): Usage {
-  const u = new Usage();
-  for (const t of agent.stats.turns) {
-    if (t.turn !== turnNo) continue;
-    u.promptTokens += t.usage.promptTokens;
-    u.completionTokens += t.usage.completionTokens;
-    u.totalTokens += t.usage.totalTokens;
-    u.promptCacheHitTokens += t.usage.promptCacheHitTokens;
-    u.promptCacheMissTokens += t.usage.promptCacheMissTokens;
-  }
-  return u;
 }
 
 interface AgentTurnOutput {

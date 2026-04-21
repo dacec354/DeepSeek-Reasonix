@@ -219,7 +219,7 @@ export function renderSummaryTable(report: DiffReport, _opts: RenderOptions = {}
   lines.push(
     row(["─".repeat(20), "─".repeat(14), "─".repeat(14), "─".repeat(14)], [20, 14, 14, 14]),
   );
-  lines.push(statRow("turns (assistant)", a.stats.turns, b.stats.turns));
+  lines.push(statRow("model calls", a.stats.turns, b.stats.turns));
   lines.push(statRow("user turns", a.stats.userTurns, b.stats.userTurns));
   lines.push(statRow("tool calls", a.stats.toolCalls, b.stats.toolCalls));
   lines.push(
@@ -305,7 +305,10 @@ export function renderMarkdown(report: DiffReport): string {
   out.push(`| metric | ${a.label} | ${b.label} | delta |`);
   out.push("|---|---:|---:|---:|");
   out.push(
-    `| turns | ${a.stats.turns} | ${b.stats.turns} | ${signed(b.stats.turns - a.stats.turns)} |`,
+    `| model calls | ${a.stats.turns} | ${b.stats.turns} | ${signed(b.stats.turns - a.stats.turns)} |`,
+  );
+  out.push(
+    `| user turns | ${a.stats.userTurns} | ${b.stats.userTurns} | ${signed(b.stats.userTurns - a.stats.userTurns)} |`,
   );
   out.push(
     `| tool calls | ${a.stats.toolCalls} | ${b.stats.toolCalls} | ${signed(b.stats.toolCalls - a.stats.toolCalls)} |`,
