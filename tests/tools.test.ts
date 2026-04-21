@@ -49,4 +49,118 @@ describe("ToolRegistry", () => {
     expect(spec.function.name).toBe("echo");
     expect(spec.function.parameters.required).toEqual(["msg"]);
   });
+
+  it("does NOT flatten shallow schemas", () => {
+    const reg = new ToolRegistry();
+    reg.register({
+      name: "shallow",
+      parameters: {
+        type: "object",
+        properties: { a: { type: "string" }, b: { type: "number" } },
+        required: ["a"],
+      },
+      fn: () => "ok",
+    });
+    expect(reg.wasFlattened("shallow")).toBe(false);
+    expect(reg.specs()[0]!.function.parameters.properties).toHaveProperty("a");
+  });
+
+  it("auto-flattens deep schemas and re-nests args on dispatch", async () => {
+    const reg = new ToolRegistry();
+    let received: any = null;
+    reg.register({
+      name: "deep",
+      parameters: {
+        type: "object",
+        required: ["user"],
+        properties: {
+          user: {
+            type: "object",
+            required: ["profile"],
+            properties: {
+              profile: {
+                type: "object",
+                required: ["name"],
+                properties: {
+                  name: { type: "string" },
+                  age: { type: "integer" },
+                },
+              },
+            },
+          },
+        },
+      },
+      fn: (args: any) => {
+        received = args;
+        return "ok";
+      },
+    });
+
+    expect(reg.wasFlattened("deep")).toBe(true);
+    const spec = reg.specs()[0]!;
+    expect(spec.function.parameters.properties).toHaveProperty("user.profile.name");
+    expect(spec.function.parameters.properties).toHaveProperty("user.profile.age");
+
+    // Model emits flat dot-notation args (as it would after seeing the flat spec).
+    await reg.dispatch("deep", '{"user.profile.name":"alice","user.profile.age":30}');
+    expect(received).toEqual({ user: { profile: { name: "alice", age: 30 } } });
+  });
+
+  it("auto-flattens wide schemas (>10 leaf params)", () => {
+    const reg = new ToolRegistry();
+    const props: Record<string, { type: string }> = {};
+    for (let i = 0; i < 15; i++) props[`p${i}`] = { type: "string" };
+    reg.register({
+      name: "wide",
+      parameters: { type: "object", properties: props },
+      fn: () => "ok",
+    });
+    expect(reg.wasFlattened("wide")).toBe(true);
+  });
+
+  it("dispatch passes through nested args even when tool was flattened (defensive)", async () => {
+    const reg = new ToolRegistry();
+    let received: any = null;
+    reg.register({
+      name: "deep",
+      parameters: {
+        type: "object",
+        properties: {
+          a: {
+            type: "object",
+            properties: {
+              b: { type: "object", properties: { c: { type: "string" } } },
+            },
+          },
+        },
+      },
+      fn: (args: any) => {
+        received = args;
+        return "ok";
+      },
+    });
+    expect(reg.wasFlattened("deep")).toBe(true);
+    // Some models may ignore the flat spec and emit nested args anyway.
+    await reg.dispatch("deep", '{"a":{"b":{"c":"hi"}}}');
+    expect(received).toEqual({ a: { b: { c: "hi" } } });
+  });
+
+  it("autoFlatten:false opts out", () => {
+    const reg = new ToolRegistry({ autoFlatten: false });
+    reg.register({
+      name: "deep",
+      parameters: {
+        type: "object",
+        properties: {
+          a: {
+            type: "object",
+            properties: { b: { type: "object", properties: { c: { type: "string" } } } },
+          },
+        },
+      },
+      fn: () => "ok",
+    });
+    expect(reg.wasFlattened("deep")).toBe(false);
+    expect(reg.specs()[0]!.function.parameters.properties).toHaveProperty("a");
+  });
 });

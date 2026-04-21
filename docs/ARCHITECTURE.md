@@ -67,12 +67,14 @@ validated at runtime. The typed state is queryable by the orchestrator — e.g.
 - Same tool called repeatedly with identical args (call-storm).
 - Truncated JSON due to `max_tokens` hit mid-structure.
 
-**Solution.** Four repair passes run before the model's tool_calls reach the executor:
+**Solution.** Four passes:
 
-1. **`scavenge`** — regex + JSON parser sweeps `reasoning_content` for any tool
+1. **`flatten`** — schemas with >10 leaf params or depth >2 are auto-detected
+   on `ToolRegistry.register()` and presented to the model in dot-notation
+   form. `dispatch()` re-nests the args before calling the user's `fn`.
+   Opt out with `new ToolRegistry({ autoFlatten: false })`.
+2. **`scavenge`** — regex + JSON parser sweeps `reasoning_content` for any tool
    call the model forgot to emit in `tool_calls`.
-2. **`flatten`** — schemas with >10 leaf params or depth >2 are presented to
-   the model as dot-notation flat schemas, then re-nested before dispatch.
 3. **`truncation`** — detect unbalanced JSON and repair by closing braces or
    requesting a continuation completion.
 4. **`storm`** — identical `(tool, args)` tuple within a sliding window →
@@ -107,6 +109,7 @@ src/
 - **v0.0.1** — Pillar 1 end-to-end, Pillar 3 complete, Ink TUI, τ-bench scaffold.
 - **v0.0.2** — First-run key prompt, saved to `~/.reasonix/config.json`.
 - **v0.0.3** — Pillar 2 MVP (opt-in harvest), retry layer, TextInput fix.
+- **v0.0.4** — Schema flatten auto-applied in ToolRegistry (closes Pillar 3).
 - **v0.1** — τ-bench numbers published, streaming polish, transcript replay.
 - **v0.2** — Self-consistency / branch-budget sampling driven by plan state.
 - **v0.3** — MCP client, session persistence.
