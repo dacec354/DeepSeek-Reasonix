@@ -1,0 +1,105 @@
+/**
+ * Pillar 3 — Tool-Call Repair pipeline.
+ *
+ * Order of passes per turn:
+ *   1. scavenge       — recover tool calls leaked into <think>
+ *   2. truncation     — close any half-emitted argument JSON
+ *   3. storm breaker  — drop call-storm repeats
+ *
+ * Schema flattening is applied during loop construction (it changes what we
+ * advertise to the model), not per-turn.
+ */
+
+import type { ToolCall } from "../types.js";
+import { scavengeToolCalls } from "./scavenge.js";
+import { StormBreaker } from "./storm.js";
+import { repairTruncatedJson } from "./truncation.js";
+
+export { analyzeSchema, flattenSchema, nestArguments } from "./flatten.js";
+export type { FlattenDecision } from "./flatten.js";
+export { repairTruncatedJson } from "./truncation.js";
+export type { TruncationRepairResult } from "./truncation.js";
+export { scavengeToolCalls } from "./scavenge.js";
+export type { ScavengeOptions, ScavengeResult } from "./scavenge.js";
+export { StormBreaker } from "./storm.js";
+
+export interface RepairReport {
+  scavenged: number;
+  truncationsFixed: number;
+  stormsBroken: number;
+  notes: string[];
+}
+
+export interface ToolCallRepairOptions {
+  allowedToolNames: ReadonlySet<string>;
+  stormWindow?: number;
+  stormThreshold?: number;
+  maxScavenge?: number;
+}
+
+export class ToolCallRepair {
+  private readonly storm: StormBreaker;
+  private readonly opts: ToolCallRepairOptions;
+
+  constructor(opts: ToolCallRepairOptions) {
+    this.opts = opts;
+    this.storm = new StormBreaker(opts.stormWindow ?? 6, opts.stormThreshold ?? 3);
+  }
+
+  process(
+    declaredCalls: ToolCall[],
+    reasoningContent: string | null,
+  ): { calls: ToolCall[]; report: RepairReport } {
+    const report: RepairReport = {
+      scavenged: 0,
+      truncationsFixed: 0,
+      stormsBroken: 0,
+      notes: [],
+    };
+
+    // 1. Scavenge — only add calls whose (name,args) signature is novel.
+    const scavenged = scavengeToolCalls(reasoningContent, {
+      allowedNames: this.opts.allowedToolNames,
+      maxCalls: this.opts.maxScavenge ?? 4,
+    });
+    const seenSignatures = new Set(declaredCalls.map(signature));
+    const merged = [...declaredCalls];
+    for (const sc of scavenged.calls) {
+      if (!seenSignatures.has(signature(sc))) {
+        merged.push(sc);
+        report.scavenged++;
+        seenSignatures.add(signature(sc));
+      }
+    }
+    report.notes.push(...scavenged.notes);
+
+    // 2. Truncation repair on argument JSON.
+    for (const call of merged) {
+      const args = call.function?.arguments ?? "";
+      const r = repairTruncatedJson(args);
+      if (r.changed) {
+        call.function.arguments = r.repaired;
+        report.truncationsFixed++;
+        report.notes.push(...r.notes.map((n) => `[${call.function.name}] ${n}`));
+      }
+    }
+
+    // 3. Storm breaker.
+    const filtered: ToolCall[] = [];
+    for (const call of merged) {
+      const verdict = this.storm.inspect(call);
+      if (verdict.suppress) {
+        report.stormsBroken++;
+        if (verdict.reason) report.notes.push(verdict.reason);
+        continue;
+      }
+      filtered.push(call);
+    }
+
+    return { calls: filtered, report };
+  }
+}
+
+function signature(call: ToolCall): string {
+  return `${call.function?.name ?? ""}::${call.function?.arguments ?? ""}`;
+}
