@@ -24,12 +24,18 @@ program
     "--harvest",
     "Extract typed plan state from R1 reasoning (Pillar 2, adds a cheap V3 call per turn)",
   )
+  .option(
+    "--branch <n>",
+    "Self-consistency: run N parallel samples per turn and pick the most confident (disables streaming; enables harvest)",
+    (v) => Number.parseInt(v, 10),
+  )
   .action(async (opts) => {
     await chatCommand({
       model: opts.model,
       system: opts.system,
       transcript: opts.transcript,
       harvest: !!opts.harvest,
+      branch: Number.isFinite(opts.branch) && opts.branch > 1 ? opts.branch : undefined,
     });
   });
 

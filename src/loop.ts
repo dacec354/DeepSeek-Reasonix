@@ -1,4 +1,5 @@
 import type { DeepSeekClient } from "./client.js";
+import { type BranchOptions, type BranchSample, runBranches } from "./consistency.js";
 import { type HarvestOptions, type TypedPlanState, emptyPlanState, harvest } from "./harvest.js";
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
@@ -6,7 +7,21 @@ import { SessionStats, type TurnStats } from "./telemetry.js";
 import { ToolRegistry } from "./tools.js";
 import type { ChatMessage, ToolCall } from "./types.js";
 
-export type EventRole = "assistant_delta" | "assistant_final" | "tool" | "done" | "error";
+export type EventRole =
+  | "assistant_delta"
+  | "assistant_final"
+  | "tool"
+  | "done"
+  | "error"
+  | "branch_start"
+  | "branch_done";
+
+export interface BranchSummary {
+  budget: number;
+  chosenIndex: number;
+  uncertainties: number[]; // per-sample uncertainty counts
+  temperatures: number[];
+}
 
 export interface LoopEvent {
   turn: number;
@@ -17,6 +32,7 @@ export interface LoopEvent {
   stats?: TurnStats;
   planState?: TypedPlanState;
   repair?: RepairReport;
+  branch?: BranchSummary;
   error?: string;
 }
 
@@ -33,6 +49,13 @@ export interface CacheFirstLoopOptions {
    * cheap but non-zero V3 call per turn).
    */
   harvest?: boolean | HarvestOptions;
+  /**
+   * Self-consistency branching. Pass a number for just a budget (e.g. 3) or
+   * a full `BranchOptions` object. Disables streaming for the branched turn
+   * because all samples must complete before selection. Auto-enables harvest
+   * since the default selector scores samples by plan-state uncertainty.
+   */
+  branch?: number | BranchOptions;
 }
 
 /**
@@ -53,6 +76,8 @@ export class CacheFirstLoop {
   readonly stream: boolean;
   readonly harvestEnabled: boolean;
   readonly harvestOptions: HarvestOptions;
+  readonly branchEnabled: boolean;
+  readonly branchOptions: BranchOptions;
   readonly log = new AppendOnlyLog();
   readonly scratch = new VolatileScratch();
   readonly stats = new SessionStats();
@@ -65,11 +90,31 @@ export class CacheFirstLoop {
     this.tools = opts.tools ?? new ToolRegistry();
     this.model = opts.model ?? "deepseek-chat";
     this.maxToolIters = opts.maxToolIters ?? 8;
-    this.stream = opts.stream ?? true;
+
+    // Resolve branch config first (since it forces harvest on).
+    if (typeof opts.branch === "number") {
+      this.branchOptions = { budget: opts.branch };
+    } else if (opts.branch && typeof opts.branch === "object") {
+      this.branchOptions = opts.branch;
+    } else {
+      this.branchOptions = {};
+    }
+    this.branchEnabled = (this.branchOptions.budget ?? 1) > 1;
+
+    // Branching requires harvest for its default selector to work.
+    const harvestForced = this.branchEnabled;
     this.harvestEnabled =
-      opts.harvest === true || (typeof opts.harvest === "object" && opts.harvest !== null);
+      harvestForced ||
+      opts.harvest === true ||
+      (typeof opts.harvest === "object" && opts.harvest !== null);
     this.harvestOptions =
-      typeof opts.harvest === "object" && opts.harvest !== null ? opts.harvest : {};
+      typeof opts.harvest === "object" && opts.harvest !== null
+        ? opts.harvest
+        : (this.branchOptions.harvestOptions ?? {});
+
+    // Streaming is incompatible with branching (need all samples to select).
+    this.stream = this.branchEnabled ? false : (opts.stream ?? true);
+
     const allowedNames = new Set([...this.prefix.toolSpecs.map((s) => s.function.name)]);
     this.repair = new ToolCallRepair({ allowedToolNames: allowedNames });
   }
@@ -94,8 +139,41 @@ export class CacheFirstLoop {
       let toolCalls: ToolCall[] = [];
       let usage: TurnStats["usage"] | null = null;
 
+      let branchSummary: BranchSummary | undefined;
+      let preHarvestedPlanState: TypedPlanState | undefined;
+
       try {
-        if (this.stream) {
+        if (this.branchEnabled) {
+          yield {
+            turn: this._turn,
+            role: "branch_start",
+            content: "",
+          };
+          const result = await runBranches(
+            this.client,
+            {
+              model: this.model,
+              messages,
+              tools: toolSpecs.length ? toolSpecs : undefined,
+            },
+            {
+              ...this.branchOptions,
+              harvestOptions: this.harvestOptions,
+            },
+          );
+          assistantContent = result.chosen.response.content;
+          reasoningContent = result.chosen.response.reasoningContent ?? "";
+          toolCalls = result.chosen.response.toolCalls;
+          usage = result.chosen.response.usage;
+          preHarvestedPlanState = result.chosen.planState;
+          branchSummary = summarizeBranch(result.chosen, result.samples);
+          yield {
+            turn: this._turn,
+            role: "branch_done",
+            content: "",
+            branch: branchSummary,
+          };
+        } else if (this.stream) {
           const callBuf: Map<number, ToolCall> = new Map();
           for await (const chunk of this.client.stream({
             model: this.model,
@@ -169,9 +247,11 @@ export class CacheFirstLoop {
       }
 
       this.scratch.reasoning = reasoningContent || null;
-      const planState = this.harvestEnabled
-        ? await harvest(reasoningContent || null, this.client, this.harvestOptions)
-        : emptyPlanState();
+      const planState = preHarvestedPlanState
+        ? preHarvestedPlanState
+        : this.harvestEnabled
+          ? await harvest(reasoningContent || null, this.client, this.harvestOptions)
+          : emptyPlanState();
 
       const { calls: repairedCalls, report } = this.repair.process(
         toolCalls,
@@ -187,6 +267,7 @@ export class CacheFirstLoop {
         stats: turnStats,
         planState,
         repair: report,
+        branch: branchSummary,
       };
 
       if (repairedCalls.length === 0) {
@@ -226,4 +307,13 @@ export class CacheFirstLoop {
     if (toolCalls.length > 0) msg.tool_calls = toolCalls;
     return msg;
   }
+}
+
+function summarizeBranch(chosen: BranchSample, samples: BranchSample[]): BranchSummary {
+  return {
+    budget: samples.length,
+    chosenIndex: chosen.index,
+    uncertainties: samples.map((s) => s.planState.uncertainties.length),
+    temperatures: samples.map((s) => s.temperature),
+  };
 }

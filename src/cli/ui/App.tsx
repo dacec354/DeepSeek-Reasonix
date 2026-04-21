@@ -13,6 +13,7 @@ export interface AppProps {
   system: string;
   transcript?: string;
   harvest?: boolean;
+  branch?: number;
 }
 
 /**
@@ -28,7 +29,7 @@ interface StreamingState {
   reasoning: string;
 }
 
-export function App({ model, system, transcript, harvest }: AppProps) {
+export function App({ model, system, transcript, harvest, branch }: AppProps) {
   const { exit } = useApp();
   const [historical, setHistorical] = useState<DisplayEvent[]>([]);
   const [streaming, setStreaming] = useState<DisplayEvent | null>(null);
@@ -57,10 +58,10 @@ export function App({ model, system, transcript, harvest }: AppProps) {
     if (loopRef.current) return loopRef.current;
     const client = new DeepSeekClient();
     const prefix = new ImmutablePrefix({ system });
-    const l = new CacheFirstLoop({ client, prefix, model, harvest });
+    const l = new CacheFirstLoop({ client, prefix, model, harvest, branch });
     loopRef.current = l;
     return l;
-  }, [model, system, harvest]);
+  }, [model, system, harvest, branch]);
 
   const prefixHash = loop.prefix.fingerprint;
 
@@ -126,6 +127,16 @@ export function App({ model, system, transcript, harvest }: AppProps) {
           if (ev.role === "assistant_delta") {
             if (ev.content) contentBuf.current += ev.content;
             if (ev.reasoningDelta) reasoningBuf.current += ev.reasoningDelta;
+          } else if (ev.role === "branch_start") {
+            setStreaming({
+              id: assistantId,
+              role: "assistant",
+              text: "",
+              streaming: true,
+            });
+          } else if (ev.role === "branch_done") {
+            // Intermediate: branching finished but assistant_final not yet emitted.
+            // We keep streaming state alive; actual render happens on assistant_final.
           } else if (ev.role === "assistant_final") {
             flush();
             const repairNote = ev.repair ? describeRepair(ev.repair) : "";
@@ -138,6 +149,7 @@ export function App({ model, system, transcript, harvest }: AppProps) {
                 text: ev.content || streamRef.text,
                 reasoning: streamRef.reasoning || undefined,
                 planState: ev.planState,
+                branch: ev.branch,
                 stats: ev.stats,
                 repair: repairNote || undefined,
                 streaming: false,

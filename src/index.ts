@@ -4,7 +4,20 @@ export { DeepSeekClient, Usage } from "./client.js";
 export type { ChatResponse, StreamChunk, DeepSeekClientOptions } from "./client.js";
 
 export { CacheFirstLoop } from "./loop.js";
-export type { CacheFirstLoopOptions, LoopEvent, EventRole } from "./loop.js";
+export type {
+  CacheFirstLoopOptions,
+  LoopEvent,
+  EventRole,
+  BranchSummary,
+} from "./loop.js";
+
+export { runBranches, defaultSelector } from "./consistency.js";
+export type {
+  BranchOptions,
+  BranchSample,
+  BranchResult,
+  BranchSelector,
+} from "./consistency.js";
 
 export { ImmutablePrefix, AppendOnlyLog, VolatileScratch } from "./memory.js";
 export type { ImmutablePrefixOptions } from "./memory.js";

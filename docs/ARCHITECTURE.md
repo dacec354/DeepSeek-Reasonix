@@ -59,6 +59,26 @@ The harvester is a cheap V3 call with a strict JSON schema. Output is
 validated at runtime. The typed state is queryable by the orchestrator — e.g.
 "if `uncertainties.length > 2`, trigger branch sampling."
 
+### Branch-and-Select *(v0.0.5, opt-in, builds on Pillar 2)*
+
+**Why now.** DeepSeek is cheap enough that running N=3 R1 samples is still
+cheaper than a single Claude call. What was research luxury (self-consistency
+sampling) becomes a practical default.
+
+**How.** When `--branch N` (or `{ branch: N }` in code) is passed:
+
+1. The turn is forced non-streaming (N samples must complete before we can
+   compare).
+2. `runBranches` fires N `client.chat` calls in parallel, spreading
+   temperatures across `[0, 1]` to diversify reasoning paths.
+3. Each sample's `reasoning_content` is piped through Pillar 2's harvest.
+4. The default selector picks the sample with the fewest `uncertainties`;
+   ties are broken by shorter answer length (Occam).
+5. The loop emits a `branch_summary` alongside the winning `assistant_final`.
+
+**Cost.** 3× R1 on a hard math problem ≈ \$0.02 — still dominates Claude on
+cost/quality for agentic work.
+
 ### Pillar 3 — Tool-Call Repair *(v0.0.1 ships complete)*
 
 **Problem.** Empirical DeepSeek failure modes:
@@ -110,6 +130,8 @@ src/
 - **v0.0.2** — First-run key prompt, saved to `~/.reasonix/config.json`.
 - **v0.0.3** — Pillar 2 MVP (opt-in harvest), retry layer, TextInput fix.
 - **v0.0.4** — Schema flatten auto-applied in ToolRegistry (closes Pillar 3).
+- **v0.0.5** — Self-consistency branching (`--branch N`) driven by Pillar 2
+  plan-state uncertainty count.
 - **v0.1** — τ-bench numbers published, streaming polish, transcript replay.
 - **v0.2** — Self-consistency / branch-budget sampling driven by plan state.
 - **v0.3** — MCP client, session persistence.

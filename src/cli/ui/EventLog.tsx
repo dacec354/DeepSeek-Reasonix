@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import React from "react";
 import { type TypedPlanState, isPlanStateEmpty } from "../../harvest.js";
+import type { BranchSummary } from "../../loop.js";
 import type { TurnStats } from "../../telemetry.js";
 import { Markdown } from "./markdown.js";
 
@@ -12,6 +13,7 @@ export interface DisplayEvent {
   text: string;
   reasoning?: string;
   planState?: TypedPlanState;
+  branch?: BranchSummary;
   toolName?: string;
   stats?: TurnStats;
   repair?: string;
@@ -38,6 +40,7 @@ export const EventRow = React.memo(function EventRow({ event }: { event: Display
             assistant
           </Text>
         </Box>
+        {event.branch ? <BranchBlock branch={event.branch} /> : null}
         {event.reasoning ? <ReasoningBlock reasoning={event.reasoning} /> : null}
         {!isPlanStateEmpty(event.planState) ? (
           <PlanStateBlock planState={event.planState!} />
@@ -79,6 +82,26 @@ export const EventRow = React.memo(function EventRow({ event }: { event: Display
     </Box>
   );
 });
+
+function BranchBlock({ branch }: { branch: BranchSummary }) {
+  const per = branch.uncertainties
+    .map((u, i) => {
+      const marker = i === branch.chosenIndex ? "▸" : " ";
+      const t = (branch.temperatures[i] ?? 0).toFixed(1);
+      return `${marker} #${i} T=${t} u=${u}`;
+    })
+    .join("  ");
+  return (
+    <Box>
+      <Text color="blue">
+        {"🔀 branched "}
+        <Text bold>{branch.budget}</Text>
+        {` samples → picked #${branch.chosenIndex}   `}
+        <Text dimColor>{per}</Text>
+      </Text>
+    </Box>
+  );
+}
 
 function PlanStateBlock({ planState }: { planState: TypedPlanState }) {
   const lines: Array<[string, string[]]> = [];
