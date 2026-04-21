@@ -153,30 +153,42 @@ export function renderReport(report: HarvestBenchReport): string {
  * Findings section is hand-written into report.md after rendering — the
  * numbers don't interpret themselves, and boilerplate sections full of
  * "TBD — analyse the data" are worse than nothing. Append with append().
+ *
+ * This section has been updated twice: after the first 9-run set (which
+ * bottomed out at V3 on easy tasks) and after this 18-run set (which
+ * bottomed out at V3 on *hard* tasks too).
  */
 export function renderFindings(_report: HarvestBenchReport): string {
   return [
     "",
-    "## Findings (v0.3 first data point)",
+    "## Findings (v0.3, 18-run set)",
     "",
-    "This is the first harvest-bench run. Three honest findings:",
+    "Two bands of tasks tried (easy: mod7 / flips / hats; hard: pseudoprime341 / D_7 / Euler quadratic). The hard band was chosen for *known V3 failure modes*. Result:",
     "",
-    "1. **V3 chat already solves all three tasks.** Baseline pass rate is 3/3 — these reasoning problems are within V3's competence. That means the task set is too easy to *differentiate* reasoner from chat, let alone reasoner+harvest from reasoner.",
-    "2. **Reasoner costs ~2.5× chat on these tasks with identical pass rate.** On the v0.3 seed task set, there is no quality argument for R1. The cache-hit story is preserved though — reasoner mode still hits 79% mean cache on the Cache-First loop, so Pillar 1's claim extends to R1.",
-    "3. **Harvest produced real signal** (mean 3.3 subgoals / 1.3 uncertainties per run on the mode that captured it), but one of the three runs hit the client's 120s timeout — harvest-bench needs a longer default timeout or harvest should be async w.r.t. the main turn.",
+    "1. **V3 chat passed all six tasks, including the three \"hard\" ones.** DeepSeek V3 knew 341 is the smallest base-2 pseudoprime, computed D_7=1854, and identified n=40 as the first Euler-polynomial failure. The tasks are well-known enough to be in training; the trap-answer variants (561, 265, 41) that the checkers specifically reject didn't fire.",
+    "2. **Reasoner cost 3.04× baseline for identical pass rates (6/6 both sides).** On this task set, R1 adds cost and latency without measurable quality. The cache-hit story *does* extend to reasoner (74.2% mean), so Pillar 1 generalizes to R1 — but that's not a Pillar 2 story.",
+    "3. **Harvest produced real signal** (mean 2.8 subgoals, 1.3 uncertainties per run where it fired) but didn't improve outcomes. One run hit the 300s timeout (bumped from 120s), suggesting reasoner-harvest latency is still unpredictable on some problems.",
     "",
-    "### What this means for v0.3",
+    "### What this tells us about Pillar 2 positioning",
     "",
-    "We can't ship a \"harvest is worth the extra V3 call\" claim off this data — the seed tasks bottom out at V3. To actually measure Pillar 2, the task set needs:",
-    "- problems where V3 demonstrably fails (so R1 has room to win)",
-    "- followed by problems where the specific harvest signal (uncertainty detection) correlates with error",
+    "We've now given harvest two shots at showing answer-quality value on pure reasoning tasks. Both times V3 ate its lunch. This isn't a framework bug — it's a positioning signal:",
     "",
-    "This is a scope insight, not a framework failure. The harness runs cleanly, plan state lands in transcripts, CI protects the wiring. The *data* says we need harder tasks.",
+    "- **On well-known math / logic / counting problems, DeepSeek V3 is strong enough that paying for R1 is not justified by accuracy.** Pillar 2's \"smart preset\" cost multiplier (10×) quoted in the README is real but for most single-question Q/A it buys nothing.",
+    "- **Harvest's plausible value surfaces are not \"better math answers\".** More likely: (a) transparency / auditability for developers, (b) planning support when tools are in the mix, (c) driving branch-sampling on cases where uncertainty correlates with wrongness. None of those are tested here.",
     "",
-    "### Known issues",
+    "### Recommendation",
     "",
-    "- **120s client timeout** on reasoner-harvest for `three_hats` — R1 took ~100s, harvest's extra V3 call pushed past the cap. Next run should pass `--timeout` or bump the default.",
-    "- **5-subgoals cap** hitting uniformly — harvest's `maxItems` default is 5; true signal could be higher. Revisit the cap when we find tasks where harvest fires more.",
+    "Don't ship v0.3 on the \"harvest makes answers more correct\" claim — the data doesn't support it. Two honest paths forward:",
+    "",
+    "- **Reframe Pillar 2 as a developer-facing introspection feature** (debug visibility into R1's planning). Keep harvest opt-in; stop implying it improves accuracy on end-user tasks.",
+    "- **Move harvest eval to tool-use contexts** where uncertainty matters for *which tool to call next*, not *is this math right*. That's a new task shape — different harness, not a bigger task set here.",
+    "",
+    "In either case, the next Reasonix release is better served by MCP client (Pillar 1 leverage across the ecosystem) than by a bigger harvest-bench data push.",
+    "",
+    "### Notes",
+    "",
+    "- Cache hit on baseline runs surprised me (39.5% mean). That's DeepSeek's *cross-session* prompt cache: the same system prompt ran many times across modes and runs warmed the server-side cache. Real cross-session evidence that Cache-First's value isn't only per-session.",
+    "- 5-subgoals cap still hit uniformly. `HarvestOptions.maxItems` default is 5; harvest is truncating. Moot unless we find a setting where that matters.",
     "",
   ].join("\n");
 }
