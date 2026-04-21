@@ -3,6 +3,61 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-04-21
+
+**Headline:** v0.2 grows eyes. `reasonix replay` and `reasonix diff` now
+open interactive Ink TUIs by default. The stdout paths still work when
+piped, so CI / `less` / markdown-export workflows aren't disturbed.
+
+### Added
+
+- **Interactive `reasonix replay <transcript>`** — Ink TUI with
+  per-turn navigation (`j`/`k`/space/arrows, `g`/`G` for jump-to-edge,
+  `q` to quit). Sidebar re-renders cumulative cost / cache / prefix
+  stability as the cursor moves, so "how did the cache hit rate climb
+  over the conversation?" is answered visually instead of in
+  aggregate.
+- **Interactive `reasonix diff <a> <b>`** — split-pane Ink TUI. Both
+  sides scroll together; `n` / `N` jump the cursor to the next / prev
+  divergent turn (the whole point of a diff tool). Cursor defaults to
+  the first divergence so you skip the "identical setup turns".
+- **Shared `RecordView` component** (`src/cli/ui/RecordView.tsx`)
+  used by both TUIs — consistent visual grammar (user cyan, assistant
+  green with cache badge, tool yellow, error red). Replaces the
+  inline renderer in `ReplayApp`.
+- **Pure navigation helpers** in `src/diff.ts`:
+  `findNextDivergence(pairs, fromIdx)` and
+  `findPrevDivergence(pairs, fromIdx)`. Unit-testable without Ink.
+  Both guard against out-of-bounds `fromIdx`.
+- **Pure replay nav helpers** in `src/replay.ts`:
+  `groupRecordsByTurn(records)` and `computeCumulativeStats(pages, upToIdx)`.
+  Used by the TUI sidebar; also individually testable.
+- **New CLI flags** on both commands:
+  - `reasonix replay --print` — force stdout pretty-print (auto when
+    stdout isn't a TTY, or when `--head` / `--tail` is passed).
+  - `reasonix diff --print` — force stdout table.
+  - `reasonix diff --tui` — force Ink TUI even when piped (rare
+    escape hatch).
+
+### Changed
+
+- **`reasonix replay` default** is now the TUI. Old stdout behavior
+  reachable via `--print` or by piping. Non-TTY detection
+  automatically flips to stdout mode, so shell pipelines behave as
+  they did in 0.2.0.
+- **`reasonix diff` default** picks itself from context:
+  - `--md <path>` → write markdown + print summary (unchanged).
+  - `--print` or piped stdout → stdout summary table.
+  - TTY, no `--md`, no `--print` → TUI.
+
+### Tests
+
+- +10 new tests (`replay.test.ts` +6: `groupRecordsByTurn` +
+  `computeCumulativeStats`; `diff.test.ts` +4: divergence navigation).
+  Suite: **169 passing** (was 159).
+
+---
+
 ## [0.2.0] — 2026-04-21
 
 **Headline:** v0.2 makes the v0.1 cache-hit claim *auditable*. Any reader
@@ -97,5 +152,6 @@ branching, and session persistence. They're not reflected as individual
 entries above because the `0.1.0` bench harness is what first produced
 *externally verifiable* evidence for their value.
 
+[0.2.1]: https://github.com/esengine/reasonix/releases/tag/v0.2.1
 [0.2.0]: https://github.com/esengine/reasonix/releases/tag/v0.2.0
 [0.1.0]: https://github.com/esengine/reasonix/releases/tag/v0.1.0
