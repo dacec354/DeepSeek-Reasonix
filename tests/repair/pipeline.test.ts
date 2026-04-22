@@ -47,4 +47,33 @@ describe("ToolCallRepair pipeline", () => {
     expect(calls.length).toBe(1);
     expect(report.scavenged).toBe(0);
   });
+
+  it("scavenges DSML tool calls from the content channel (regular turn, not just reasoning)", () => {
+    // R1 sometimes emits the DSML envelope in the content stream
+    // instead of the proper tool_calls field. Before this wire-up,
+    // the model's intent was silently dropped.
+    const repair = new ToolCallRepair({
+      allowedToolNames: new Set(["filesystem_read_file"]),
+    });
+    const content = [
+      "I'll read the file next.",
+      '<｜DSML｜invoke name="filesystem_read_file">',
+      '  <｜DSML｜parameter name="path" string="true">README.md</｜DSML｜parameter>',
+      "</｜DSML｜invoke>",
+    ].join("\n");
+    const { calls, report } = repair.process([], null, content);
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.function.name).toBe("filesystem_read_file");
+    expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ path: "README.md" });
+    expect(report.scavenged).toBe(1);
+  });
+
+  it("does not double-count when DSML appears in both reasoning and content", () => {
+    const repair = new ToolCallRepair({ allowedToolNames: new Set(["search"]) });
+    const dsml =
+      '<｜DSML｜invoke name="search"><｜DSML｜parameter name="q" string="true">ts</｜DSML｜parameter></｜DSML｜invoke>';
+    const { calls, report } = repair.process([], dsml, dsml);
+    expect(calls.length).toBe(1);
+    expect(report.scavenged).toBe(1);
+  });
 });

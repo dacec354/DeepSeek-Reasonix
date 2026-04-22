@@ -49,6 +49,7 @@ export class ToolCallRepair {
   process(
     declaredCalls: ToolCall[],
     reasoningContent: string | null,
+    content: string | null = null,
   ): { calls: ToolCall[]; report: RepairReport } {
     const report: RepairReport = {
       scavenged: 0,
@@ -58,7 +59,13 @@ export class ToolCallRepair {
     };
 
     // 1. Scavenge — only add calls whose (name,args) signature is novel.
-    const scavenged = scavengeToolCalls(reasoningContent, {
+    // Scan both channels: reasoning (where R1 leaks JSON calls into
+    // <think>) AND content (where it emits DSML markup in regular
+    // turns). Joined with a newline so the scanners see the blobs as
+    // independent bodies. Dedup below keeps us from inflating if the
+    // same call shows up in both — first seen wins.
+    const combined = [reasoningContent ?? "", content ?? ""].filter(Boolean).join("\n");
+    const scavenged = scavengeToolCalls(combined || null, {
       allowedNames: this.opts.allowedToolNames,
       maxCalls: this.opts.maxScavenge ?? 4,
     });

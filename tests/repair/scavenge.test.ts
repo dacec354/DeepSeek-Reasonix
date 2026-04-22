@@ -44,4 +44,60 @@ describe("scavengeToolCalls", () => {
     const r = scavengeToolCalls(reasoning, { allowedNames: allowed, maxCalls: 2 });
     expect(r.calls.length).toBe(2);
   });
+
+  it("extracts a DSML invoke block with string + JSON parameters", () => {
+    const dsmlAllowed = new Set(["filesystem_edit_file"]);
+    const input = [
+      "Let me make the edit.",
+      "",
+      '<｜DSML｜function_calls> <｜DSML｜invoke name="filesystem_edit_file">',
+      '  <｜DSML｜parameter name="path" string="true">F:/x.html</｜DSML｜parameter>',
+      '  <｜DSML｜parameter name="edits" string="false">[{"oldText":"a","newText":"b"}]</｜DSML｜parameter>',
+      "</｜DSML｜invoke> </｜DSML｜function_calls>",
+    ].join("\n");
+    const r = scavengeToolCalls(input, { allowedNames: dsmlAllowed });
+    expect(r.calls.length).toBe(1);
+    const call = r.calls[0]!;
+    expect(call.function.name).toBe("filesystem_edit_file");
+    const args = JSON.parse(call.function.arguments);
+    expect(args.path).toBe("F:/x.html");
+    expect(args.edits).toEqual([{ oldText: "a", newText: "b" }]);
+    expect(r.notes[0]).toMatch(/DSML/);
+  });
+
+  it("accepts ASCII pipe DSML variant too", () => {
+    const dsmlAllowed = new Set(["search"]);
+    const input =
+      '<|DSML|invoke name="search"><|DSML|parameter name="q" string="true">ts</|DSML|parameter></|DSML|invoke>';
+    const r = scavengeToolCalls(input, { allowedNames: dsmlAllowed });
+    expect(r.calls.length).toBe(1);
+    expect(JSON.parse(r.calls[0]!.function.arguments)).toEqual({ q: "ts" });
+  });
+
+  it("DSML call with unknown tool name is skipped (allow-list guards us)", () => {
+    const input =
+      '<｜DSML｜invoke name="rm_rf_slash"><｜DSML｜parameter name="x" string="true">y</｜DSML｜parameter></｜DSML｜invoke>';
+    const r = scavengeToolCalls(input, { allowedNames: allowed });
+    expect(r.calls).toEqual([]);
+  });
+
+  it("DSML 'string=false' with malformed JSON falls back to literal text (loses no data)", () => {
+    const dsmlAllowed = new Set(["search"]);
+    const input =
+      '<｜DSML｜invoke name="search"><｜DSML｜parameter name="q" string="false">not valid json</｜DSML｜parameter></｜DSML｜invoke>';
+    const r = scavengeToolCalls(input, { allowedNames: dsmlAllowed });
+    expect(r.calls.length).toBe(1);
+    expect(JSON.parse(r.calls[0]!.function.arguments)).toEqual({ q: "not valid json" });
+  });
+
+  it("does not double-count: JSON args inside a DSML block don't become separate calls", () => {
+    const dsmlAllowed = new Set(["filesystem_edit_file"]);
+    // The inner JSON is a param value, not a standalone scavenge target.
+    const input =
+      '<｜DSML｜invoke name="filesystem_edit_file"><｜DSML｜parameter name="edits" string="false">{"name": "filesystem_edit_file", "arguments": {}}</｜DSML｜parameter></｜DSML｜invoke>';
+    const r = scavengeToolCalls(input, { allowedNames: dsmlAllowed });
+    // Expect exactly one call — the DSML wrapper. If Pattern B also
+    // fired on the inner JSON we'd see two.
+    expect(r.calls.length).toBe(1);
+  });
 });

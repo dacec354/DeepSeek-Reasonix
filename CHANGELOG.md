@@ -3,6 +3,49 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] — 2026-04-21
+
+**Headline:** Two protocol-level completions bundled together. (1)
+DSML-hallucinated tool calls are now **recovered** (not just stripped
+from display) — when R1 emits its chat-template markup in the content
+channel instead of the proper `tool_calls` field, the repair pipeline
+parses it back into a real ToolCall and executes it. (2) The MCP
+client gains `resources/*` and `prompts/*` — the remaining method
+families needed for spec parity beyond tools.
+
+### Added
+
+- **DSML invoke parser in `scavengeToolCalls`.** Pattern A in
+  `src/repair/scavenge.ts` now recognizes `<｜DSML｜invoke name="X">…</｜DSML｜invoke>` blocks with nested `<｜DSML｜parameter name="k" string="true|false">v</｜DSML｜parameter>` children. `string="true"` → literal; `string="false"` → JSON. Both full-width `｜` and ASCII `|` variants accepted. Malformed JSON under `string="false"` falls back to a literal string so data isn't lost.
+- **Content-channel scavenge.** `ToolCallRepair.process` now takes an
+  optional third arg `content` and scans both reasoning + content for
+  leaked calls. The loop wires `assistantContent` through. This closes
+  the hole noted in the v0.4 deferred queue: before, DSML in a regular
+  turn was stripped from display but the tool never ran.
+- **MCP `resources/list` + `resources/read`** on `McpClient`. Types:
+  `McpResource`, `McpResourceContents` (text + blob shapes),
+  `ListResourcesResult`, `ReadResourceResult`. Pagination cursor
+  supported.
+- **MCP `prompts/list` + `prompts/get`** on `McpClient`. Types:
+  `McpPrompt`, `McpPromptArgument`, `McpPromptMessage`,
+  `McpPromptResourceBlock`, `ListPromptsResult`, `GetPromptResult`.
+- **Initialize capabilities** now advertise `resources` and `prompts`
+  alongside `tools`. Servers that don't implement them respond with
+  −32601 method-not-found; client surfaces that as a thrown Error.
+
+### Tests (+13, suite 340→353)
+
+- `tests/repair/scavenge.test.ts` (+5) — DSML with string + JSON
+  params, ASCII-pipe variant, allow-list skip, `string="false"`
+  malformed-JSON fallback, no double-counting via Pattern B.
+- `tests/repair/pipeline.test.ts` (+2) — content-channel DSML yields
+  scavenged call; no double-count when DSML appears in both channels.
+- `tests/mcp.test.ts` (+6) — list+read resources, method-not-found
+  on unsupported server, capabilities payload advertises all three,
+  cursor round-trip; list+get prompts with args, argument omission.
+
+---
+
 ## [0.4.4] — 2026-04-21
 
 **Headline:** `/tool` slash command — inspect the full untruncated

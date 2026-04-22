@@ -594,6 +594,7 @@ export class CacheFirstLoop {
       const { calls: repairedCalls, report } = this.repair.process(
         toolCalls,
         reasoningContent || null,
+        assistantContent || null,
       );
 
       this.appendAndPersist(this.assistantMessage(assistantContent, repairedCalls));

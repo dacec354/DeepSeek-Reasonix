@@ -10,8 +10,9 @@
  *     insulated as long as we keep up with the spec itself.
  *
  * Spec reference: https://spec.modelcontextprotocol.io/ (2024-11-05 draft
- * at time of writing). Only the subset Reasonix consumes is modeled here —
- * tools list/call + init handshake. Resources and prompts are deferred.
+ * at time of writing). Reasonix models the subset it consumes: tools
+ * list/call, resources list/read, prompts list/get, plus the init
+ * handshake. Sampling and progress notifications remain deferred.
  *
  * Transport note: the wire format for stdio MCP is **newline-delimited
  * JSON** (NDJSON), not the LSP-style Content-Length header framing that
@@ -66,7 +67,11 @@ export interface McpClientInfo {
 export interface McpClientCapabilities {
   /** Empty object advertises support without any optional sub-features. */
   tools?: Record<string, never>;
-  // resources / prompts / sampling would go here — deferred.
+  /** Advertised when the client can consume `resources/list` + `resources/read`. */
+  resources?: Record<string, never>;
+  /** Advertised when the client can consume `prompts/list` + `prompts/get`. */
+  prompts?: Record<string, never>;
+  // sampling would go here — deferred.
 }
 
 export interface InitializeParams {
@@ -131,6 +136,112 @@ export interface CallToolResult {
   content: McpContentBlock[];
   /** True = tool raised an error; the content describes it. */
   isError?: boolean;
+}
+
+// ---------- MCP resources ----------
+
+/**
+ * A resource the server can expose — think "file the model can read."
+ * The URI is opaque to the client: servers may use `file://`, custom
+ * schemes, or bare strings. Reasonix doesn't interpret them.
+ */
+export interface McpResource {
+  uri: string;
+  name: string;
+  description?: string;
+  /** Hint for the content type (e.g. "text/markdown"). Purely informational. */
+  mimeType?: string;
+}
+
+export interface ListResourcesParams {
+  /** Pagination cursor from a previous listResources response. */
+  cursor?: string;
+}
+
+export interface ListResourcesResult {
+  resources: McpResource[];
+  nextCursor?: string;
+}
+
+export interface ReadResourceParams {
+  uri: string;
+}
+
+/**
+ * One resource can return multiple content blobs (e.g. the file + a
+ * side-car). `text` is the common case for UTF-8 content; `blob` is
+ * base64-encoded bytes for binary content. Servers populate exactly
+ * one of the two for each entry.
+ */
+export interface McpResourceContentsText {
+  uri: string;
+  mimeType?: string;
+  text: string;
+}
+
+export interface McpResourceContentsBlob {
+  uri: string;
+  mimeType?: string;
+  blob: string;
+}
+
+export type McpResourceContents = McpResourceContentsText | McpResourceContentsBlob;
+
+export interface ReadResourceResult {
+  contents: McpResourceContents[];
+}
+
+// ---------- MCP prompts ----------
+
+/**
+ * A parameterizable prompt template the server exposes. Clients fetch
+ * it with `prompts/get` and pass the result to the model as-is.
+ */
+export interface McpPromptArgument {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
+export interface McpPrompt {
+  name: string;
+  description?: string;
+  arguments?: McpPromptArgument[];
+}
+
+export interface ListPromptsParams {
+  cursor?: string;
+}
+
+export interface ListPromptsResult {
+  prompts: McpPrompt[];
+  nextCursor?: string;
+}
+
+export interface GetPromptParams {
+  name: string;
+  arguments?: Record<string, string>;
+}
+
+/**
+ * MCP prompt messages are modeled after chat completions: role + content.
+ * Content can be a text block OR (per the spec) a resource/image block;
+ * Reasonix cares about text in v1, but surfaces the raw array so callers
+ * can render other kinds if they need to.
+ */
+export interface McpPromptMessage {
+  role: "user" | "assistant";
+  content: McpContentBlock | McpPromptResourceBlock;
+}
+
+export interface McpPromptResourceBlock {
+  type: "resource";
+  resource: McpResourceContents;
+}
+
+export interface GetPromptResult {
+  description?: string;
+  messages: McpPromptMessage[];
 }
 
 // ---------- convenience ----------

@@ -8,15 +8,23 @@ import type { McpTransport } from "./stdio.js";
 import {
   type CallToolParams,
   type CallToolResult,
+  type GetPromptParams,
+  type GetPromptResult,
   type InitializeParams,
   type InitializeResult,
   type JsonRpcId,
   type JsonRpcMessage,
   type JsonRpcRequest,
   type JsonRpcResponse,
+  type ListPromptsParams,
+  type ListPromptsResult,
+  type ListResourcesParams,
+  type ListResourcesResult,
   type ListToolsResult,
   MCP_PROTOCOL_VERSION,
   type McpClientInfo,
+  type ReadResourceParams,
+  type ReadResourceResult,
   isJsonRpcError,
 } from "./types.js";
 
@@ -63,7 +71,12 @@ export class McpClient {
     this.startReaderIfNeeded();
     const result = await this.request<InitializeResult>("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: { tools: {} },
+      // Advertise every method the client can consume so servers know
+      // they can send listChanged notifications etc. Sub-feature flags
+      // (e.g. `resources.subscribe`) are omitted — we don't implement
+      // those yet and the empty object means "method-level support, no
+      // sub-features."
+      capabilities: { tools: {}, resources: {}, prompts: {} },
       clientInfo: this.clientInfo,
     } satisfies InitializeParams);
     this._serverCapabilities = result.capabilities ?? {};
@@ -91,6 +104,49 @@ export class McpClient {
       name,
       arguments: args ?? {},
     } satisfies CallToolParams);
+  }
+
+  /**
+   * List resources the server exposes. Supports a pagination cursor;
+   * callers interested in the full set should loop on `nextCursor`.
+   * Servers that don't support resources respond with method-not-found
+   * (−32601) — we surface that as a thrown Error so callers can gate
+   * on the `serverCapabilities.resources` field first.
+   */
+  async listResources(cursor?: string): Promise<ListResourcesResult> {
+    this.assertInitialized();
+    return this.request<ListResourcesResult>("resources/list", {
+      ...(cursor ? { cursor } : {}),
+    } satisfies ListResourcesParams);
+  }
+
+  /** Read the contents of a resource by URI. */
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    this.assertInitialized();
+    return this.request<ReadResourceResult>("resources/read", {
+      uri,
+    } satisfies ReadResourceParams);
+  }
+
+  /** List prompt templates the server exposes. */
+  async listPrompts(cursor?: string): Promise<ListPromptsResult> {
+    this.assertInitialized();
+    return this.request<ListPromptsResult>("prompts/list", {
+      ...(cursor ? { cursor } : {}),
+    } satisfies ListPromptsParams);
+  }
+
+  /**
+   * Fetch a rendered prompt by name. `args` supplies values for any
+   * required template arguments; the server validates. Returns messages
+   * ready to prepend to the model's input.
+   */
+  async getPrompt(name: string, args?: Record<string, string>): Promise<GetPromptResult> {
+    this.assertInitialized();
+    return this.request<GetPromptResult>("prompts/get", {
+      name,
+      ...(args ? { arguments: args } : {}),
+    } satisfies GetPromptParams);
   }
 
   /** Close the transport and reject any outstanding requests. */

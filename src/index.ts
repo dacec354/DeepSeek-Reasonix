@@ -136,6 +136,18 @@ export type {
   JsonRpcRequest,
   JsonRpcResponse,
   JsonRpcMessage,
+  McpResource,
+  McpResourceContents,
+  McpResourceContentsText,
+  McpResourceContentsBlob,
+  ListResourcesResult,
+  ReadResourceResult,
+  McpPrompt,
+  McpPromptArgument,
+  McpPromptMessage,
+  McpPromptResourceBlock,
+  ListPromptsResult,
+  GetPromptResult,
 } from "./mcp/types.js";
 
 export { fetchWithRetry } from "./retry.js";

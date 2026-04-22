@@ -13,10 +13,14 @@ import { bridgeMcpTools, flattenMcpResult } from "../src/mcp/registry.js";
 import type { McpTransport } from "../src/mcp/stdio.js";
 import {
   type CallToolResult,
+  type GetPromptResult,
   type JsonRpcMessage,
   type JsonRpcRequest,
+  type ListPromptsResult,
+  type ListResourcesResult,
   MCP_PROTOCOL_VERSION,
   type McpTool,
+  type ReadResourceResult,
 } from "../src/mcp/types.js";
 
 // ---------- fake transport ----------
@@ -29,6 +33,16 @@ interface FakeServerOptions {
   errorFor?: Set<string>;
   /** Track every call the server received. */
   received?: JsonRpcRequest[];
+  /** resources/list response. Optional — omit to return empty. */
+  listResources?: () => ListResourcesResult;
+  /** resources/read response keyed by URI. Throw-returns method-not-found for unknowns. */
+  readResource?: (uri: string) => ReadResourceResult;
+  /** prompts/list response. */
+  listPrompts?: () => ListPromptsResult;
+  /** prompts/get response keyed by name. */
+  getPrompt?: (name: string, args?: Record<string, string>) => GetPromptResult;
+  /** Initialize capabilities override — defaults advertise tools only. */
+  capabilities?: Record<string, unknown>;
 }
 
 /**
@@ -87,7 +101,7 @@ class FakeMcpTransport implements McpTransport {
           result: {
             protocolVersion: MCP_PROTOCOL_VERSION,
             serverInfo: { name: "fake-mcp", version: "0.0.0" },
-            capabilities: { tools: { listChanged: false } },
+            capabilities: this.opts.capabilities ?? { tools: { listChanged: false } },
           },
         };
       case "tools/list":
@@ -109,6 +123,49 @@ class FakeMcpTransport implements McpTransport {
           ? this.opts.callHandler(params.name, params.arguments ?? {})
           : { content: [{ type: "text" as const, text: `called ${params.name}` }] };
         return { jsonrpc: "2.0", id: req.id, result };
+      }
+      case "resources/list":
+        if (!this.opts.listResources) {
+          return {
+            jsonrpc: "2.0",
+            id: req.id,
+            error: { code: -32601, message: "method not found: resources/list" },
+          };
+        }
+        return { jsonrpc: "2.0", id: req.id, result: this.opts.listResources() };
+      case "resources/read": {
+        if (!this.opts.readResource) {
+          return {
+            jsonrpc: "2.0",
+            id: req.id,
+            error: { code: -32601, message: "method not found: resources/read" },
+          };
+        }
+        const { uri } = req.params as { uri: string };
+        return { jsonrpc: "2.0", id: req.id, result: this.opts.readResource(uri) };
+      }
+      case "prompts/list":
+        if (!this.opts.listPrompts) {
+          return {
+            jsonrpc: "2.0",
+            id: req.id,
+            error: { code: -32601, message: "method not found: prompts/list" },
+          };
+        }
+        return { jsonrpc: "2.0", id: req.id, result: this.opts.listPrompts() };
+      case "prompts/get": {
+        if (!this.opts.getPrompt) {
+          return {
+            jsonrpc: "2.0",
+            id: req.id,
+            error: { code: -32601, message: "method not found: prompts/get" },
+          };
+        }
+        const { name, arguments: a } = req.params as {
+          name: string;
+          arguments?: Record<string, string>;
+        };
+        return { jsonrpc: "2.0", id: req.id, result: this.opts.getPrompt(name, a) };
       }
       default:
         return {
@@ -350,5 +407,135 @@ describe("bridgeMcpTools: result-size cap", () => {
     expect(out).toContain("truncated");
     // Sanity-silence TS about the unused transport binding.
     void transport;
+  });
+});
+
+describe("McpClient: resources", () => {
+  it("lists resources and reads one by URI", async () => {
+    const transport = new FakeMcpTransport({
+      tools: [],
+      capabilities: { tools: {}, resources: { listChanged: false } },
+      listResources: () => ({
+        resources: [
+          { uri: "file:///a.md", name: "a", mimeType: "text/markdown" },
+          { uri: "custom://b", name: "b" },
+        ],
+      }),
+      readResource: (uri) => ({
+        contents: [{ uri, mimeType: "text/plain", text: `body of ${uri}` }],
+      }),
+    });
+    const client = new McpClient({ transport });
+    await client.initialize();
+
+    const list = await client.listResources();
+    expect(list.resources).toHaveLength(2);
+    expect(list.resources[0]!.uri).toBe("file:///a.md");
+
+    const read = await client.readResource("file:///a.md");
+    expect(read.contents).toHaveLength(1);
+    const block = read.contents[0]!;
+    expect("text" in block ? block.text : "").toBe("body of file:///a.md");
+    expect(block.mimeType).toBe("text/plain");
+
+    await client.close();
+  });
+
+  it("surfaces method-not-found as an error when the server lacks resources support", async () => {
+    // Default FakeMcpTransport (no listResources handler) → −32601.
+    const transport = new FakeMcpTransport({ tools: [] });
+    const client = new McpClient({ transport });
+    await client.initialize();
+    await expect(client.listResources()).rejects.toThrow(/-32601/);
+    await client.close();
+  });
+
+  it("advertises resources + prompts in the initialize capabilities payload", async () => {
+    const received: JsonRpcRequest[] = [];
+    const transport = new FakeMcpTransport({ tools: [], received });
+    const client = new McpClient({ transport });
+    await client.initialize();
+    const init = received.find((r) => r.method === "initialize")!;
+    const params = init.params as { capabilities: Record<string, unknown> };
+    // The client now claims to support all three method families.
+    expect(params.capabilities).toHaveProperty("tools");
+    expect(params.capabilities).toHaveProperty("resources");
+    expect(params.capabilities).toHaveProperty("prompts");
+    await client.close();
+  });
+
+  it("propagates the pagination cursor to resources/list", async () => {
+    const received: JsonRpcRequest[] = [];
+    const transport = new FakeMcpTransport({
+      tools: [],
+      received,
+      listResources: () => ({ resources: [], nextCursor: undefined }),
+    });
+    const client = new McpClient({ transport });
+    await client.initialize();
+    await client.listResources("page2");
+    const listReq = received.find((r) => r.method === "resources/list")!;
+    expect((listReq.params as { cursor?: string }).cursor).toBe("page2");
+    await client.close();
+  });
+});
+
+describe("McpClient: prompts", () => {
+  it("lists prompts and fetches a rendered one with arguments", async () => {
+    const transport = new FakeMcpTransport({
+      tools: [],
+      capabilities: { tools: {}, prompts: { listChanged: false } },
+      listPrompts: () => ({
+        prompts: [
+          {
+            name: "summarize",
+            description: "summarize a document",
+            arguments: [{ name: "lang", required: true }],
+          },
+        ],
+      }),
+      getPrompt: (name, args) => ({
+        description: `rendered ${name}`,
+        messages: [
+          {
+            role: "user",
+            content: { type: "text", text: `please summarize in ${args?.lang ?? "?"}` },
+          },
+        ],
+      }),
+    });
+    const client = new McpClient({ transport });
+    await client.initialize();
+
+    const list = await client.listPrompts();
+    expect(list.prompts).toHaveLength(1);
+    expect(list.prompts[0]!.name).toBe("summarize");
+    expect(list.prompts[0]!.arguments?.[0]?.required).toBe(true);
+
+    const got = await client.getPrompt("summarize", { lang: "zh" });
+    expect(got.messages).toHaveLength(1);
+    const msg = got.messages[0]!;
+    expect(msg.role).toBe("user");
+    expect(msg.content.type).toBe("text");
+    if (msg.content.type === "text") {
+      expect(msg.content.text).toContain("zh");
+    }
+
+    await client.close();
+  });
+
+  it("omits the arguments field when caller passes no args", async () => {
+    const received: JsonRpcRequest[] = [];
+    const transport = new FakeMcpTransport({
+      tools: [],
+      received,
+      getPrompt: () => ({ messages: [] }),
+    });
+    const client = new McpClient({ transport });
+    await client.initialize();
+    await client.getPrompt("hello");
+    const getReq = received.find((r) => r.method === "prompts/get")!;
+    expect(getReq.params).toEqual({ name: "hello" });
+    await client.close();
   });
 });

@@ -30,7 +30,28 @@ export function scavengeToolCalls(
   const notes: string[] = [];
   const out: ToolCall[] = [];
 
-  for (const candidate of iterateJsonObjects(reasoningContent)) {
+  // Pattern A: DSML invoke blocks. R1 sometimes emits tool calls as
+  // its chat-template markup in the content channel instead of the
+  // proper `tool_calls` field. 0.4.3 stripped these from display;
+  // here we actually turn them back into proper ToolCalls so the
+  // model's intent isn't lost.
+  for (const invoke of iterateDsmlInvokes(reasoningContent)) {
+    if (out.length >= max) break;
+    if (!opts.allowedNames.has(invoke.name)) continue;
+    out.push({
+      function: {
+        name: invoke.name,
+        arguments: JSON.stringify(invoke.args),
+      },
+    });
+    notes.push(`scavenged DSML call: ${invoke.name}`);
+  }
+
+  // Pattern B: raw JSON objects (the original three shapes). Strip
+  // any DSML blocks we already processed so parameter JSON buried
+  // inside them doesn't get re-scavenged as a standalone call.
+  const nonDsml = stripDsmlBlocks(reasoningContent);
+  for (const candidate of iterateJsonObjects(nonDsml)) {
     if (out.length >= max) break;
     const call = coerceToToolCall(candidate, opts.allowedNames);
     if (call) {
@@ -39,6 +60,85 @@ export function scavengeToolCalls(
     }
   }
   return { calls: out, notes };
+}
+
+interface DsmlInvoke {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+/**
+ * Yield DeepSeek DSML invoke blocks scavenged from text. R1's chat
+ * template uses these when the server-side tool-call serializer
+ * misfires — we see them verbatim in the content channel:
+ *
+ *   <｜DSML｜function_calls>
+ *     <｜DSML｜invoke name="filesystem_edit_file">
+ *       <｜DSML｜parameter name="path" string="true">F:/x.html</｜DSML｜parameter>
+ *       <｜DSML｜parameter name="edits" string="false">[…]</｜DSML｜parameter>
+ *     </｜DSML｜invoke>
+ *   </｜DSML｜function_calls>
+ *
+ * The wrapper class (｜ U+FF5C vs ASCII |) varies by model build, so
+ * we accept both. `string="true"` means the parameter value is a
+ * literal string; `string="false"` means it's JSON.
+ */
+/**
+ * Remove DSML invoke/function_calls blocks from text so the raw-JSON
+ * scanner below doesn't see parameter payloads as standalone calls.
+ * Mirrors the strip pass in `stripHallucinatedToolMarkup` but scoped
+ * to scavenge (we also want the `function_calls` wrapper gone —
+ * nothing useful to scavenge there).
+ */
+function stripDsmlBlocks(text: string): string {
+  let out = text;
+  out = out.replace(/<[｜|]DSML[｜|]function_calls>[\s\S]*?<\/?[｜|]DSML[｜|]function_calls>/g, "");
+  out = out.replace(/<[｜|]DSML[｜|]invoke\s+[^>]*>[\s\S]*?<\/[｜|]DSML[｜|]invoke>/g, "");
+  return out;
+}
+
+function* iterateDsmlInvokes(text: string): Generator<DsmlInvoke> {
+  // `｜` (U+FF5C) in practice; `|` (ASCII) as a fallback seen in a
+  // minority of builds. `[｜|]` inside the regex covers both.
+  const INVOKE_RE = /<[｜|]DSML[｜|]invoke\s+name="([^"]+)">([\s\S]*?)<\/[｜|]DSML[｜|]invoke>/g;
+  for (const match of text.matchAll(INVOKE_RE)) {
+    const name = match[1];
+    const body = match[2];
+    if (!name || body === undefined) continue;
+    yield { name, args: parseDsmlParameters(body) };
+  }
+}
+
+/**
+ * Parse the parameter children of a DSML invoke body into a plain
+ * object. We tolerate:
+ *   - `string="true"` → literal text; whitespace trimmed at the edges.
+ *   - `string="false"` → JSON-parsed; falls back to literal text if the
+ *     payload turns out to be malformed (better to hand a string
+ *     through than lose the parameter entirely).
+ *   - no `string="…"` attribute → treat as literal text (older/shorter
+ *     DSML shapes we haven't formally seen but want to handle).
+ */
+function parseDsmlParameters(body: string): Record<string, unknown> {
+  const PARAM_RE =
+    /<[｜|]DSML[｜|]parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>([\s\S]*?)<\/[｜|]DSML[｜|]parameter>/g;
+  const args: Record<string, unknown> = {};
+  for (const m of body.matchAll(PARAM_RE)) {
+    const key = m[1];
+    const stringFlag = m[2];
+    const raw = (m[3] ?? "").trim();
+    if (!key) continue;
+    if (stringFlag === "false") {
+      try {
+        args[key] = JSON.parse(raw);
+        continue;
+      } catch {
+        // Fall through — keep as literal so the information isn't lost.
+      }
+    }
+    args[key] = raw;
+  }
+  return args;
 }
 
 /** Yield every top-level JSON object substring in `text`. */
