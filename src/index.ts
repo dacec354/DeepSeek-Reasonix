@@ -92,8 +92,13 @@ export { StdioTransport } from "./mcp/stdio.js";
 export type { McpTransport, StdioTransportOptions } from "./mcp/stdio.js";
 export { SseTransport } from "./mcp/sse.js";
 export type { SseTransportOptions } from "./mcp/sse.js";
-export { bridgeMcpTools, flattenMcpResult } from "./mcp/registry.js";
-export type { BridgeOptions, BridgeResult } from "./mcp/registry.js";
+export {
+  DEFAULT_MAX_RESULT_CHARS,
+  bridgeMcpTools,
+  flattenMcpResult,
+  truncateForModel,
+} from "./mcp/registry.js";
+export type { BridgeOptions, BridgeResult, FlattenOptions } from "./mcp/registry.js";
 export { parseMcpSpec } from "./mcp/spec.js";
 export type { McpSpec, StdioMcpSpec, SseMcpSpec } from "./mcp/spec.js";
 export {
@@ -135,4 +140,4 @@ export type {
   JSONSchema,
 } from "./types.js";
 
-export const VERSION = "0.3.0-alpha.5";
+export const VERSION = "0.3.0-alpha.6";

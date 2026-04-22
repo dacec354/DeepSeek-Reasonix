@@ -303,4 +303,52 @@ describe("flattenMcpResult", () => {
     });
     expect(out).toContain("[image image/png");
   });
+
+  it("truncates oversized results when maxChars is given, keeping head + tail", () => {
+    const big = `${"X".repeat(50_000)}END_MARKER`;
+    const out = flattenMcpResult({ content: [{ type: "text", text: big }] }, { maxChars: 10_000 });
+    expect(out.length).toBeLessThan(11_000); // cap + a small envelope
+    expect(out).toContain("truncated");
+    // tail preservation: the distinctive END_MARKER at the original's end must survive
+    expect(out).toContain("END_MARKER");
+    // head preservation: first chars must survive
+    expect(out.startsWith("X")).toBe(true);
+  });
+
+  it("does NOT truncate when below the cap", () => {
+    const small = "hello world";
+    const out = flattenMcpResult({ content: [{ type: "text", text: small }] }, { maxChars: 1000 });
+    expect(out).toBe("hello world");
+  });
+});
+
+describe("bridgeMcpTools: result-size cap", () => {
+  it("caps a giant MCP tool result before handing it to the registry", async () => {
+    // Minimal local fake — just enough to exercise the dispatch path.
+    const transport: McpTransport = {
+      async send() {},
+      async *messages() {},
+      async close() {},
+    };
+    const big = "A".repeat(200_000);
+    const client = {
+      listTools: async () => ({
+        tools: [
+          {
+            name: "dump",
+            description: "returns a massive string",
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      }),
+      callTool: async () => ({ content: [{ type: "text" as const, text: big }] }),
+    } as unknown as McpClient;
+    // Default cap (32k): enough to confirm the feature bites.
+    const { registry } = await bridgeMcpTools(client, { namePrefix: "x_" });
+    const out = await registry.dispatch("x_dump", "{}");
+    expect(out.length).toBeLessThan(33_000);
+    expect(out).toContain("truncated");
+    // Sanity-silence TS about the unused transport binding.
+    void transport;
+  });
 });

@@ -13,6 +13,7 @@
 
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
+// biome-ignore lint/style/useImportType: JSX (jsx: "react") needs React as a value at runtime
 import React, { useState } from "react";
 import {
   type PresetName,

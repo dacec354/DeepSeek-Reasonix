@@ -23,7 +23,27 @@ export interface BridgeOptions {
   registry?: ToolRegistry;
   /** Auto-flatten deep schemas (Pillar 3). Defaults to the registry's own default (true). */
   autoFlatten?: boolean;
+  /**
+   * Per-tool-call result cap, in characters. If a tool returns more than
+   * this, the result is truncated and a `[…truncated N chars…]` marker is
+   * appended before the last KB so the model still sees a useful tail.
+   * Defaults to {@link DEFAULT_MAX_RESULT_CHARS}.
+   *
+   * Why this exists: DeepSeek V3's context is 131,072 tokens. A single
+   * `read_file` against a big source file can return >3 MB of text
+   * (~900k tokens) and permanently poison the session — every subsequent
+   * turn rebuilds the history and 400s. This cap is a floor. Users who
+   * legitimately want bigger payloads can raise it explicitly.
+   */
+  maxResultChars?: number;
 }
+
+/**
+ * 32,000 chars ≈ 8k English tokens, or ~16k CJK tokens. Small enough to
+ * fit comfortably in history even across 5–10 tool calls, large enough
+ * that most file reads and directory listings fit un-truncated.
+ */
+export const DEFAULT_MAX_RESULT_CHARS = 32_000;
 
 export interface BridgeResult {
   registry: ToolRegistry;
@@ -46,6 +66,7 @@ export async function bridgeMcpTools(
 ): Promise<BridgeResult> {
   const registry = opts.registry ?? new ToolRegistry({ autoFlatten: opts.autoFlatten });
   const prefix = opts.namePrefix ?? "";
+  const maxResultChars = opts.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
   const result: BridgeResult = { registry, registeredNames: [], skipped: [] };
 
   const listed = await client.listTools();
@@ -61,12 +82,17 @@ export async function bridgeMcpTools(
       parameters: mcpTool.inputSchema as JSONSchema,
       fn: async (args: Record<string, unknown>) => {
         const toolResult = await client.callTool(mcpTool.name, args);
-        return flattenMcpResult(toolResult);
+        return flattenMcpResult(toolResult, { maxChars: maxResultChars });
       },
     });
     result.registeredNames.push(registeredName);
   }
   return result;
+}
+
+export interface FlattenOptions {
+  /** Cap the flattened string at this many characters. Default: no cap. */
+  maxChars?: number;
 }
 
 /**
@@ -78,14 +104,32 @@ export async function bridgeMcpTools(
  *     prompts later)
  *   - prefix error results with "ERROR: " so the calling model sees the
  *     failure clearly even through JSON mode
+ *   - optionally truncate to `maxChars` so a single oversized tool result
+ *     (e.g. a big `read_file`) can't poison the session by blowing past
+ *     the model's context window
  */
-export function flattenMcpResult(result: CallToolResult): string {
+export function flattenMcpResult(result: CallToolResult, opts: FlattenOptions = {}): string {
   const parts = result.content.map(blockToString);
   const joined = parts.join("\n").trim();
-  if (result.isError) {
-    return `ERROR: ${joined || "(no error message from server)"}`;
-  }
-  return joined;
+  const prefixed = result.isError ? `ERROR: ${joined || "(no error message from server)"}` : joined;
+  return opts.maxChars ? truncateForModel(prefixed, opts.maxChars) : prefixed;
+}
+
+/**
+ * Keep the head AND a short tail so the model sees both "what the tool
+ * started returning" and "how it ended". Head-only loses file endings
+ * (e.g. an error message appended at the bottom of a stack trace); the
+ * 1KB tail window covers that while costing almost nothing. Exported for
+ * tests and reuse by non-MCP tool adapters that want the same policy.
+ */
+export function truncateForModel(s: string, maxChars: number): string {
+  if (s.length <= maxChars) return s;
+  const tailBudget = Math.min(1024, Math.floor(maxChars * 0.1));
+  const headBudget = Math.max(0, maxChars - tailBudget);
+  const head = s.slice(0, headBudget);
+  const tail = s.slice(-tailBudget);
+  const dropped = s.length - head.length - tail.length;
+  return `${head}\n\n[…truncated ${dropped} chars — raise BridgeOptions.maxResultChars, or call the tool with a narrower scope (filter, head, pagination)…]\n\n${tail}`;
 }
 
 function blockToString(block: McpContentBlock): string {

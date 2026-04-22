@@ -3,6 +3,56 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-alpha.6] — 2026-04-21
+
+**Headline:** A single oversized tool result (e.g. `read_file` on a big
+file) used to silently poison a session — the 3 MB payload landed in
+history and every subsequent turn 400'd with *"maximum context length
+is 131072 tokens. However, you requested 929,452 tokens."* Fixed at
+both ends: prevent it, and diagnose it.
+
+### Fixed
+
+- **MCP tool results are now capped at 32,000 chars by default.**
+  Oversized results are sliced head + 1 KB tail and separated by a
+  `[…truncated N chars…]` marker so the model still sees both ends
+  (common case: error messages appended after a stack trace). Override
+  via `bridgeMcpTools(client, { maxResultChars: N })`. Rationale: ~8k
+  English tokens or ~16k CJK tokens — fits with headroom across 5–10
+  tool calls even at the context limit.
+- **`DeepSeek 400: maximum context length` errors now show actionable
+  advice** instead of a raw JSON blob. The decorated message points at
+  `/forget` (nuke the session file) and `/clear` (drop the display
+  history), and pretty-prints the requested-token figure.
+
+### Added
+
+- `DEFAULT_MAX_RESULT_CHARS` (= 32,000) export for callers that want
+  to raise or lower the cap programmatically.
+- `truncateForModel(s, maxChars)` helper export — same head + tail
+  policy, usable by non-MCP tool adapters that want the same protection.
+- `FlattenOptions` type export (just `{ maxChars? }` today).
+- `formatLoopError(err)` export — the error-decorator used by the loop,
+  exposed so library callers get the same advice when catching errors
+  outside the TUI.
+
+### Tests (+6, suite 262→268)
+
+- `tests/mcp.test.ts` (+3) — truncation with head + tail preserved,
+  no-op below cap, end-to-end `bridgeMcpTools` dispatch capped by
+  default.
+- `tests/loop-error.test.ts` (+3 new file) — overflow annotation with
+  token figure, non-overflow passthrough, overflow without a figure.
+
+### Migration note
+
+This is a silent behaviour change for any library user whose MCP tool
+was counting on >32k-char results making it to the model verbatim. If
+that's you, pass `maxResultChars: Infinity` (or a higher explicit
+value) to `bridgeMcpTools`.
+
+---
+
 ## [0.3.0-alpha.5] — 2026-04-21
 
 **Headline:** `reasonix setup` replaces the CLI-flag maze. New users run

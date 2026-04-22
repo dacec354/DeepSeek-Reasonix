@@ -391,7 +391,7 @@ export class CacheFirstLoop {
           turn: this._turn,
           role: "error",
           content: "",
-          error: (err as Error).message,
+          error: formatLoopError(err as Error),
         };
         return;
       }
@@ -480,4 +480,25 @@ function summarizeBranch(chosen: BranchSample, samples: BranchSample[]): BranchS
     uncertainties: samples.map((s) => s.planState.uncertainties.length),
     temperatures: samples.map((s) => s.temperature),
   };
+}
+
+/**
+ * Annotate the `DeepSeek 400: … maximum context length …` error the API
+ * returns when a session's history has grown past 131,072 tokens. The
+ * raw message is a JSON blob; we surface a short actionable hint on top
+ * so the user knows to `/forget` or `/clear` rather than parsing the
+ * JSON themselves. Other errors pass through unchanged — the loop's
+ * error channel already formats them well enough.
+ */
+export function formatLoopError(err: Error): string {
+  const msg = err.message ?? "";
+  if (msg.includes("maximum context length")) {
+    // Pull the "requested X tokens" figure out of the JSON for scale.
+    const reqMatch = msg.match(/requested\s+(\d+)\s+tokens/);
+    const requested = reqMatch
+      ? `${Number(reqMatch[1]).toLocaleString()} tokens`
+      : "too many tokens";
+    return `Context overflow (DeepSeek 400): session history is ${requested}, past the 131,072-token limit. This usually means a tool (e.g. read_file) returned a huge payload that's now poisoning every subsequent turn.\n  → Run /forget to delete this session and start fresh, or /clear to drop the displayed history. New MCP tool calls are now capped at 32k chars to prevent this (v0.3.0-alpha.6+).`;
+  }
+  return msg;
 }
