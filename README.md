@@ -100,12 +100,13 @@ the same Cache-First benefits. Two live runs, two data points:
 |---|---:|---:|---:|---:|---:|
 | bundled demo (`add` / `echo` / `get_time`) | 2 | 1 | **96.6%** (turn 2) | $0.000254 | −94.0% |
 | official `@modelcontextprotocol/server-filesystem` | 5 | 4 | **96.7%** overall | $0.001235 | −97.0% |
+| **both concurrently** (`demo_add` + `fs_write_file`) | 5 | 4 | **81.1%** | $0.001852 | −95.9% |
 
-The second run is the interesting one — it's through an *external*,
-production MCP server (no code we control). Five turns including
-`list_directory`, a permission-denied recovery via
-`list_allowed_directories`, a successful retry, and `read_text_file`.
-Byte-stable prefix held across every turn; cache hit stayed at 96.7%.
+The third row is the ecosystem proof: two MCP servers running as
+separate subprocesses, tools from both exercised in one conversation
+(compute `17+25` with the demo server, write the result to a real file
+via the filesystem server). **One single prefix hash across all 5
+turns** — byte-stability survives concurrent MCP subprocesses.
 
 **Reproduce without an API key** (replay the committed transcripts):
 

@@ -13,6 +13,7 @@ verify the cache-hit / cost claims *without running the bench*.
 | `t01_address_happy.diff.md` | Output of `reasonix diff` on the two above |
 | `mcp-demo.add.jsonl` | End-to-end run through the bundled demo MCP server. DeepSeek called the `add` tool; the second turn hit 96.6% cache, 94% cheaper than Claude at same token counts |
 | `mcp-filesystem.jsonl` | End-to-end run through the **official external** `@modelcontextprotocol/server-filesystem`. 5 turns, 4 tool calls including a permission-denied recovery. Overall cache 96.7%, 97% cheaper than Claude. Proof that Cache-First generalizes to third-party MCP servers without any code change on our side |
+| `mcp-multi-server.jsonl` | End-to-end run with **two MCP servers concurrently** — bundled demo (`demo_add`) + official `@modelcontextprotocol/server-filesystem` (`fs_write_file`). Model computed 17+25 on one server, wrote the result to a real file via the other. 5 turns, 4 tool calls across two subprocesses. **1 distinct prefix hash** held across all turns — Cache-First byte-stability survives running two MCP servers at once. Cache 81.1%, cost $0.00185, 95.9% cheaper than Claude |
 
 ## Verify for yourself
 
