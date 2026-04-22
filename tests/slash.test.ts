@@ -286,6 +286,24 @@ describe("handleSlash", () => {
     expect(r.info).toMatch(/\/discard/);
   });
 
+  it("/think says no reasoning cached when scratch is empty", () => {
+    const r = handleSlash("think", [], makeLoop());
+    expect(r.info).toMatch(/no reasoning cached/);
+  });
+
+  it("/think dumps the full reasoning when scratch has content", () => {
+    const loop = makeLoop();
+    loop.scratch.reasoning = "lots of R1 deliberation here over many sentences";
+    const r = handleSlash("think", [], loop);
+    expect(r.info).toMatch(/full thinking/);
+    expect(r.info).toContain("lots of R1 deliberation");
+  });
+
+  it("/help mentions /think", () => {
+    const r = handleSlash("help", [], makeLoop());
+    expect(r.info).toMatch(/\/think/);
+  });
+
   it("/commit strips surrounding double quotes from the message", () => {
     // We can't exercise git without a real repo; instead, rely on the
     // fact that /commit fails (no git repo at /nonexistent) but the

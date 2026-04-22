@@ -3,6 +3,54 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] — 2026-04-21
+
+**Headline:** Three small but visible UX improvements from a real
+session: tool-call spinner now shows elapsed time + meaningful args
+(not raw JSON), reasoning preview shows the *tail* instead of the
+head (where the decision actually lives), and a `/think` slash
+command dumps the full R1 reasoning for the most recent turn.
+
+### Changed
+
+- **Tool-running row surfaces elapsed seconds + per-tool argument
+  summary.** Instead of `⠋ tool<filesystem_edit_file> running… 
+  {"path":"F:\\testtest\\index.html","edits":[…]}`, you now see:
+    ```
+    ⠋ tool<filesystem_edit_file> running… 3s
+      path: F:\testtest\index.html (2 edits)
+    ```
+  Per-tool summarizers for `read_file`, `write_file`, `edit_file`,
+  `list_directory`, `directory_tree`, `search_files`, `move_file`,
+  `get_file_info`. Matches on suffix (`_read_file`) so namespaced
+  servers (`filesystem_read_file`) and anonymous servers both work.
+  Unknown tools fall back to a truncated raw-JSON preview — better
+  than nothing.
+- **Reasoning preview shows the tail, not the head.** R1 opens every
+  turn with the same "let me look at the structure…" scaffolding, so
+  previously the `↳ thinking: …` line repeated across turns and hid
+  the real content in `(+N chars)`. Now the preview window shows the
+  last ~260 chars — which is where the model actually decides what
+  to do next. Users reported the head-only preview made R1 turns
+  look identical; this fixes the underlying information-hiding bug.
+
+### Added
+
+- **`/think` slash command.** Dumps the full raw reasoning text from
+  the most recent turn (read from `loop.scratch.reasoning`). Intended
+  for when the 260-char tail isn't enough and you want to see R1's
+  actual chain. Reports a helpful message if no reasoning is cached
+  (e.g. the current model is `deepseek-chat`, which doesn't produce
+  `reasoning_content`). Also listed as an alias `/reasoning`.
+
+### Tests (+3, suite 319→322)
+
+- `tests/slash.test.ts` (+3) — `/think` with empty scratch prints
+  "no reasoning cached", with populated scratch dumps the content,
+  help listing includes it.
+
+---
+
 ## [0.4.1] — 2026-04-21
 
 **Headline:** `reasonix code` grows `/undo`, `/commit`, `.gitignore`

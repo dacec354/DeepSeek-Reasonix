@@ -436,25 +436,96 @@ export function App({
  * like the app has frozen — the streaming assistant display is
  * already cleared and the input is disabled, so there's nothing to
  * look at.
+ *
+ * We show three signals: a braille spinner (liveness), an elapsed
+ * timer in seconds (so "long" has a number attached), and a
+ * per-tool summary of the most informative argument fields (path,
+ * edits count, pattern, etc.). MCP doesn't stream progress today —
+ * when it does, this component is where the progress notifications
+ * would land.
  */
 function OngoingToolRow({ tool }: { tool: { name: string; args?: string } }) {
   const [tick, setTick] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 120);
-    return () => clearInterval(id);
+    const start = Date.now();
+    const frameId = setInterval(() => setTick((t) => t + 1), 120);
+    const secId = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => {
+      clearInterval(frameId);
+      clearInterval(secId);
+    };
   }, []);
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-  const argsPreview =
-    tool.args && tool.args.length > 0 && tool.args !== "{}"
-      ? `  ${tool.args.length > 60 ? `${tool.args.slice(0, 60)}…` : tool.args}`
-      : "";
+  const summary = summarizeToolArgs(tool.name, tool.args);
   return (
-    <Box marginY={1}>
-      <Text color="cyan">{frames[tick % frames.length]}</Text>
-      <Text color="yellow">{` tool<${tool.name}> running…`}</Text>
-      {argsPreview ? <Text dimColor>{argsPreview}</Text> : null}
+    <Box marginY={1} flexDirection="column">
+      <Box>
+        <Text color="cyan">{frames[tick % frames.length]}</Text>
+        <Text color="yellow">{` tool<${tool.name}> running…`}</Text>
+        <Text dimColor>{` ${elapsed}s`}</Text>
+      </Box>
+      {summary ? (
+        <Box paddingLeft={2}>
+          <Text dimColor>{summary}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
+}
+
+/**
+ * Turn raw JSON tool arguments into a one-line human summary. For
+ * common filesystem MCP tools we pull the actually-useful fields; for
+ * anything else we fall back to a truncated raw string so the user
+ * still sees *something* beyond the tool name.
+ *
+ * Match on suffix (e.g. `_read_file`) rather than exact name because
+ * `bridgeMcpTools({ namePrefix: "filesystem_" })` prepends the server
+ * namespace — tools arrive as `filesystem_read_file` in practice but
+ * callers might wire up anonymous too.
+ */
+function summarizeToolArgs(name: string, args?: string): string {
+  if (!args || args === "{}") return "";
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(args) as Record<string, unknown>;
+  } catch {
+    // Unparseable JSON — show a head slice so user at least sees
+    // what the model tried.
+    return args.length > 80 ? `${args.slice(0, 80)}…` : args;
+  }
+  const hasSuffix = (s: string) => name === s || name.endsWith(`_${s}`);
+  const path = typeof parsed.path === "string" ? parsed.path : undefined;
+  if (hasSuffix("read_file")) {
+    const head = typeof parsed.head === "number" ? `, head=${parsed.head}` : "";
+    const tail = typeof parsed.tail === "number" ? `, tail=${parsed.tail}` : "";
+    return `path: ${path ?? "?"}${head}${tail}`;
+  }
+  if (hasSuffix("write_file")) {
+    const content = typeof parsed.content === "string" ? parsed.content : "";
+    return `path: ${path ?? "?"} (${content.length} chars)`;
+  }
+  if (hasSuffix("edit_file")) {
+    const edits = Array.isArray(parsed.edits) ? parsed.edits.length : 0;
+    return `path: ${path ?? "?"} (${edits} edit${edits === 1 ? "" : "s"})`;
+  }
+  if (hasSuffix("list_directory") || hasSuffix("directory_tree")) {
+    return `path: ${path ?? "?"}`;
+  }
+  if (hasSuffix("search_files")) {
+    const pattern = typeof parsed.pattern === "string" ? parsed.pattern : "?";
+    return `path: ${path ?? "?"} · pattern: ${pattern}`;
+  }
+  if (hasSuffix("move_file")) {
+    const src = typeof parsed.source === "string" ? parsed.source : "?";
+    const dst = typeof parsed.destination === "string" ? parsed.destination : "?";
+    return `${src} → ${dst}`;
+  }
+  if (hasSuffix("get_file_info")) {
+    return `path: ${path ?? "?"}`;
+  }
+  return args.length > 80 ? `${args.slice(0, 80)}…` : args;
 }
 
 function CommandStrip({ codeMode }: { codeMode: boolean }) {

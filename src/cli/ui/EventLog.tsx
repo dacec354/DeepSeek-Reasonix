@@ -114,10 +114,15 @@ function BranchBlock({ branch }: { branch: BranchSummary }) {
 }
 
 function ReasoningBlock({ reasoning }: { reasoning: string }) {
-  const max = 220;
+  const max = 260;
   const flat = reasoning.replace(/\s+/g, " ").trim();
+  // Show the TAIL of the reasoning rather than the head. R1 opens
+  // with generic scaffolding ("let me look at the structure...") that
+  // repeats across turns and hides the part users actually want to
+  // see — the decision right before the model commits to an action.
+  // Users can dump the full reasoning with `/think` if needed.
   const preview =
-    flat.length <= max ? flat : `${flat.slice(0, max)}… (+${flat.length - max} chars)`;
+    flat.length <= max ? flat : `… (+${flat.length - max} earlier chars) ${flat.slice(-max)}`;
   return (
     <Box marginBottom={1}>
       <Text dimColor italic>

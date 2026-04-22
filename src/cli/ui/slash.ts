@@ -87,6 +87,7 @@ export function handleSlash(
           "  /mcp                     list MCP servers + tools attached to this session",
           "  /setup                   (exit + reconfigure) → run `reasonix setup`",
           "  /compact [cap]           shrink large tool results in history (default 4k/result)",
+          "  /think                   dump the most recent turn's full R1 reasoning (reasoner only)",
           "  /apply                   (code mode) commit the pending edit blocks to disk",
           "  /discard                 (code mode) drop pending edits without writing",
           "  /undo                    (code mode) roll back the last applied edit batch",
@@ -138,6 +139,19 @@ export function handleSlash(
           "To reconfigure (preset, MCP servers, API key), exit this chat and run " +
           "`reasonix setup`. Changes take effect on next launch.",
       };
+
+    case "think":
+    case "reasoning": {
+      const raw = loop.scratch.reasoning;
+      if (!raw || !raw.trim()) {
+        return {
+          info:
+            "no reasoning cached. `/think` shows the full R1 thought for the most recent turn — " +
+            "only `deepseek-reasoner` produces it, and only once the turn completes.",
+        };
+      }
+      return { info: `↳ full thinking (${raw.length} chars):\n\n${raw.trim()}` };
+    }
 
     case "undo": {
       if (!ctx.codeUndo) {
