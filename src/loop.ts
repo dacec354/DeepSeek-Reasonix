@@ -134,7 +134,13 @@ export class CacheFirstLoop {
     this.prefix = opts.prefix;
     this.tools = opts.tools ?? new ToolRegistry();
     this.model = opts.model ?? "deepseek-chat";
-    this.maxToolIters = opts.maxToolIters ?? 8;
+    // 24 is a compromise: enough for real filesystem / MCP exploration
+    // (which legitimately chains read_file → list_directory → read_file)
+    // without letting a confused model burn unlimited cost. When this
+    // ceiling is hit the loop forces a final no-tools summary call —
+    // see the post-loop branch at the bottom of step() — so the user
+    // never sees a silent stop, just a "hit tool-call budget" summary.
+    this.maxToolIters = opts.maxToolIters ?? 24;
 
     // Resolve branch config first (since it forces harvest on).
     if (typeof opts.branch === "number") {
@@ -500,7 +506,44 @@ export class CacheFirstLoop {
       }
     }
 
-    yield { turn: this._turn, role: "done", content: "[max_tool_iters reached]" };
+    // We exhausted the tool-call budget while the model still wanted to
+    // call more tools. Rather than stopping silently (which leaves the
+    // user staring at a blank prompt), force one final no-tools call so
+    // the model must produce a text summary from everything it has
+    // already seen.
+    yield* this.forceSummaryAfterIterLimit();
+  }
+
+  private async *forceSummaryAfterIterLimit(): AsyncGenerator<LoopEvent> {
+    try {
+      const messages = this.buildMessages(null);
+      const resp = await this.client.chat({
+        model: this.model,
+        messages,
+        // no tools → model is forced to answer in text
+      });
+      const summary =
+        resp.content?.trim() ||
+        "(model returned no text; try a narrower question or raise --max-tool-iters)";
+      const annotated = `[tool-call budget (${this.maxToolIters}) reached — forcing summary from what I found]\n\n${summary}`;
+      const summaryStats = this.stats.record(this._turn, this.model, resp.usage ?? new Usage());
+      this.appendAndPersist({ role: "assistant", content: summary });
+      yield {
+        turn: this._turn,
+        role: "assistant_final",
+        content: annotated,
+        stats: summaryStats,
+      };
+      yield { turn: this._turn, role: "done", content: summary };
+    } catch (err) {
+      yield {
+        turn: this._turn,
+        role: "error",
+        content: "",
+        error: `tool-call budget (${this.maxToolIters}) reached and the fallback summary call failed: ${(err as Error).message}. Run /clear and retry with a narrower question, or pass --max-tool-iters higher.`,
+      };
+      yield { turn: this._turn, role: "done", content: "" };
+    }
   }
 
   async run(userInput: string, onEvent?: (ev: LoopEvent) => void): Promise<string> {

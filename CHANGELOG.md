@@ -3,6 +3,38 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-04-21
+
+**Fixes a silent stop** that surfaced on the first real MCP exploration
+task after 0.3.0 shipped: the reasoner chained 8 filesystem tool calls
+against a project and the loop quietly exited at the `maxToolIters`
+ceiling without showing the user any answer — no error, no summary,
+just a hung-looking terminal.
+
+### Fixed
+
+- **Tool-call budget now produces a summary instead of stopping silent.**
+  When `maxToolIters` is exhausted with tool calls still pending, the
+  loop now makes one final call *with tools disabled*, forcing the
+  model to produce a text answer from everything it gathered. Yielded
+  as a normal `assistant_final` event prefixed with
+  `[tool-call budget (N) reached — forcing summary from what I found]`.
+- **Default `maxToolIters` raised from 8 → 24.** Eight was never enough
+  for real filesystem / MCP work (read_file → list → read_file chains
+  easily top that). Twenty-four is a workable ceiling that still caps
+  the damage from a confused model. Pass a number to
+  `new CacheFirstLoop({ maxToolIters: N })` to tune per call site.
+
+### Tests
+
+- `tests/loop.test.ts` (+1) — tight `maxToolIters: 2` scenario where
+  every step still wants to call tools, proves the summary call fires,
+  the annotated `assistant_final` contains the fallback text, and the
+  stream still ends with `done`.
+- Suite: **277 passing** (was 276).
+
+---
+
 ## [0.3.0] — 2026-04-21
 
 **Stable.** MCP (stdio + SSE, multi-server) + first-run wizard +

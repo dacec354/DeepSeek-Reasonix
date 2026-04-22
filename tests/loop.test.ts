@@ -186,6 +186,59 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(msgs2.length).toBeGreaterThan(msgs1.length);
   });
 
+  it("forces a summary when maxToolIters is exhausted, instead of stopping silently", async () => {
+    // Give a registered tool so the repair layer doesn't strip the fake
+    // tool_calls for referring to an unknown name.
+    const reg = new ToolRegistry();
+    reg.register({
+      name: "probe",
+      description: "no-op",
+      parameters: { type: "object", properties: {} },
+      fn: async () => "ok",
+    });
+    // Every tool-iter response says "call probe again" — infinite loop
+    // absent the iter cap. The (N+1)th response is the forced-summary
+    // call (no tools, returns text).
+    const chainingToolCall = {
+      content: "",
+      tool_calls: [
+        {
+          id: "call_1",
+          type: "function",
+          function: { name: "probe", arguments: "{}" },
+        },
+      ],
+    };
+    const responses: FakeResponseShape[] = [
+      chainingToolCall,
+      chainingToolCall,
+      { content: "done — here's what I found." }, // summary call
+    ];
+    const client = makeClient(responses);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
+      tools: reg,
+      stream: false,
+      maxToolIters: 2, // deliberately tight so we hit the cap fast
+    });
+
+    const events: { role: string; content?: string }[] = [];
+    for await (const ev of loop.step("go")) {
+      events.push({ role: ev.role, content: ev.content });
+    }
+
+    // Multiple assistant_final events are yielded (one per iter) — the
+    // summary is the LAST one, carrying the "tool-call budget" prefix.
+    const finals = events.filter((e) => e.role === "assistant_final");
+    const summary = finals[finals.length - 1];
+    expect(summary).toBeDefined();
+    expect(summary!.content).toMatch(/tool-call budget/);
+    expect(summary!.content).toContain("done — here's what I found.");
+    // Last event is still `done`, preserving the contract used by run().
+    expect(events[events.length - 1]!.role).toBe("done");
+  });
+
   it("surfaces an error event when the HTTP call fails with a non-retryable status", async () => {
     // 401 is non-retryable (bad key). Using this avoids multi-retry waits.
     const errFetch = vi.fn(async () => new Response("boom", { status: 401 }));
