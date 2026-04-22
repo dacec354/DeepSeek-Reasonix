@@ -542,3 +542,57 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(roles).toContain("error");
   });
 });
+
+describe("CacheFirstLoop (streaming) — tool_call_delta emission", () => {
+  it("yields tool_call_delta events carrying growing arg-char count", async () => {
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      // Fake fetch that streams an SSE body with a multi-chunk tool call.
+      fetch: (async (_url: any, _init: any) => {
+        const frames = [
+          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: {} }] } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "edit_file", arguments: '{"path":"a.txt","search":"' } }] } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'old","replace":"new"}' } }] } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ finish_reason: "tool_calls", delta: {} }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 1 } })}\n\n`,
+          "data: [DONE]\n\n",
+        ];
+        const body = new ReadableStream({
+          start(ctrl) {
+            for (const f of frames) ctrl.enqueue(new TextEncoder().encode(f));
+            ctrl.close();
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }) as unknown as typeof fetch,
+    });
+
+    const tools = new ToolRegistry();
+    tools.register({
+      name: "edit_file",
+      parameters: { type: "object", properties: {}, required: [] },
+      fn: () => "ok",
+    });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: tools.specs() }),
+      tools,
+      stream: true,
+      maxToolIters: 1,
+    });
+
+    const deltas: Array<{ name?: string; chars?: number }> = [];
+    for await (const ev of loop.step("do it")) {
+      if (ev.role === "tool_call_delta") {
+        deltas.push({ name: ev.toolName, chars: ev.toolCallArgsChars });
+      }
+      if (ev.role === "tool_start") break;
+    }
+
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    expect(deltas[0]!.name).toBe("edit_file");
+    expect(deltas[deltas.length - 1]!.chars).toBeGreaterThan(deltas[0]!.chars!);
+  });
+});

@@ -23,6 +23,13 @@ export type EventRole =
   | "assistant_delta"
   | "assistant_final"
   /**
+   * Emitted as `tool_calls[].function.arguments` streams in. A tool
+   * call with a large arguments payload produces no `content` or
+   * `reasoning_content` bytes — this is the only signal the UI has
+   * that the stream is alive during that window.
+   */
+  | "tool_call_delta"
+  /**
    * Yielded immediately before a tool is dispatched. Lets the TUI put
    * up a "▸ tool<X> running…" spinner while the tool's Promise is
    * pending — otherwise the UI looks frozen whenever a tool call
@@ -74,6 +81,8 @@ export interface LoopEvent {
    * what it returned. Needed by `reasonix diff` to explain divergences.
    */
   toolArgs?: string;
+  /** Cumulative arguments-string length for `role === "tool_call_delta"`. */
+  toolCallArgsChars?: number;
   stats?: TurnStats;
   planState?: TypedPlanState;
   repair?: RepairReport;
@@ -638,6 +647,16 @@ export class CacheFirstLoop {
               if (d.argumentsDelta)
                 cur.function.arguments = (cur.function.arguments ?? "") + d.argumentsDelta;
               callBuf.set(d.index, cur);
+              // Skip the id-only opener: name is empty until the next chunk.
+              if (cur.function.name) {
+                yield {
+                  turn: this._turn,
+                  role: "tool_call_delta",
+                  content: "",
+                  toolName: cur.function.name,
+                  toolCallArgsChars: (cur.function.arguments ?? "").length,
+                };
+              }
             }
             if (chunk.usage) usage = chunk.usage;
           }

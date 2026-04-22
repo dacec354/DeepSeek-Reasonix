@@ -71,6 +71,7 @@ interface StreamingState {
   id: string;
   text: string;
   reasoning: string;
+  toolCallBuild?: { name: string; chars: number };
 }
 
 export function App({
@@ -136,6 +137,8 @@ export function App({
   // would need per-project scoping we haven't designed.
   const promptHistory = useRef<string[]>([]);
   const historyCursor = useRef<number>(-1);
+  // Disambiguates <Static> keys when a single turn yields multiple assistant_final events.
+  const assistantIterCounter = useRef<number>(0);
   // Full untruncated tool results, in arrival order. The EventLog
   // renderer clips tool output at 400 chars for display; `/tool N`
   // reads from this ref to show the real thing. Not persisted — a
@@ -492,22 +495,31 @@ export function App({
       const streamRef: StreamingState = { id: assistantId, text: "", reasoning: "" };
       const contentBuf = { current: "" };
       const reasoningBuf = { current: "" };
+      // Coalesces tool_call_delta events into one re-render per flush tick.
+      const toolCallBuildBuf: { current: { name: string; chars: number } | null } = {
+        current: null,
+      };
 
       setStreaming({ id: assistantId, role: "assistant", text: "", streaming: true });
       setBusy(true);
       abortedThisTurn.current = false;
 
       const flush = () => {
-        if (!contentBuf.current && !reasoningBuf.current) return;
+        if (!contentBuf.current && !reasoningBuf.current && !toolCallBuildBuf.current) return;
         streamRef.text += contentBuf.current;
         streamRef.reasoning += reasoningBuf.current;
+        if (toolCallBuildBuf.current) {
+          streamRef.toolCallBuild = toolCallBuildBuf.current;
+        }
         contentBuf.current = "";
         reasoningBuf.current = "";
+        toolCallBuildBuf.current = null;
         setStreaming({
           id: assistantId,
           role: "assistant",
           text: streamRef.text,
           reasoning: streamRef.reasoning || undefined,
+          toolCallBuild: streamRef.toolCallBuild,
           streaming: true,
         });
       };
@@ -529,6 +541,13 @@ export function App({
           } else if (ev.role === "assistant_delta") {
             if (ev.content) contentBuf.current += ev.content;
             if (ev.reasoningDelta) reasoningBuf.current += ev.reasoningDelta;
+          } else if (ev.role === "tool_call_delta") {
+            if (ev.toolName) {
+              toolCallBuildBuf.current = {
+                name: ev.toolName,
+                chars: ev.toolCallArgsChars ?? 0,
+              };
+            }
           } else if (ev.role === "branch_start") {
             setStreaming({
               id: assistantId,
@@ -560,13 +579,15 @@ export function App({
             // confusing in multi-iter tool-call chains.
             setSummary(loop.stats.summary());
             const finalText = ev.content || streamRef.text;
+            const iterReasoning = streamRef.reasoning || undefined;
+            const iterId = `${assistantId}-i${assistantIterCounter.current++}`;
             setHistorical((prev) => [
               ...prev,
               {
-                id: assistantId,
+                id: iterId,
                 role: "assistant",
                 text: finalText,
-                reasoning: streamRef.reasoning || undefined,
+                reasoning: iterReasoning,
                 planState: ev.planState,
                 branch: ev.branch,
                 stats: ev.stats,
@@ -574,6 +595,14 @@ export function App({
                 streaming: false,
               },
             ]);
+            // streamRef is scoped to the whole handleSubmit call but each
+            // iteration's deltas must not bleed into the next.
+            streamRef.text = "";
+            streamRef.reasoning = "";
+            streamRef.toolCallBuild = undefined;
+            contentBuf.current = "";
+            reasoningBuf.current = "";
+            toolCallBuildBuf.current = null;
             if (codeMode && finalText && !ev.forcedSummary) {
               // Parse SEARCH/REPLACE blocks but DO NOT write them to
               // disk. Store as pending — the user has to say /apply

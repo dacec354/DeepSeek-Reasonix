@@ -3,6 +3,54 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.13] — 2026-04-22
+
+**Headline:** Two streaming-row bugs that made `reasonix code` feel
+broken: the spinner froze for the entire duration of a large
+`edit_file` call, and multi-iteration turns displayed the previous
+iteration's body text concatenated into the next one.
+
+### Fixed
+
+- **Streaming row no longer freezes during a large tool-call.** When
+  the model streams `tool_calls[].function.arguments` (kilobytes of
+  SEARCH/REPLACE for a big `edit_file`) there are zero `content` or
+  `reasoning_content` bytes, so the label sat on "writing response ·
+  N chars" untouched — indistinguishable from a hung network. The
+  loop now yields a new `tool_call_delta` event carrying the growing
+  cumulative argument-char count, and the TUI surfaces it either as
+  a dedicated "assembling tool call <name> · N chars of arguments"
+  phase (magenta) when content/reasoning are empty, or as an extra
+  segment on the "writing response" line when content is also
+  streaming.
+- **Multi-iteration turns no longer concat prior iterations' text
+  into the next row.** A single `handleSubmit` can span N iterations
+  (each tool_call loops us around the model), and the streaming
+  buffer wasn't reset between them. If an iteration returned empty
+  content (pure tool_calls), the historical entry fell back to the
+  streaming-buffer's accumulated text — yielding an assistant block
+  that read like a concatenation of every prior iteration's reply.
+  Fix: clear `streamRef.text` / `.reasoning` / `.toolCallBuild` and
+  the per-flush buffers on every `assistant_final`.
+- **Unique `<Static>` key per iteration.** A single turn's multiple
+  assistant_final events used to share one React key, which Ink
+  dedupes; the iteration counter fixes it.
+
+### Added
+
+- `LoopEvent` role `tool_call_delta` with field `toolCallArgsChars`
+  (cumulative arguments-string length for the call being assembled).
+  Useful for any UI consumer, not just the TUI.
+
+### Tests (+1, suite 443→444)
+
+- `tests/loop.test.ts` — new streaming test: fake SSE body streams a
+  tool_call across multiple chunks; asserts `tool_call_delta` events
+  carry a strictly-growing `toolCallArgsChars` and that the id-only
+  opener (name still empty) does not emit an event.
+
+---
+
 ## [0.4.12] — 2026-04-22
 
 **Headline:** Bulletproof tool_calls ↔ tool pairing so corrupted

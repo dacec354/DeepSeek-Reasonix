@@ -20,6 +20,7 @@ export interface DisplayEvent {
   stats?: TurnStats;
   repair?: string;
   streaming?: boolean;
+  toolCallBuild?: { name: string; chars: number };
 }
 
 export const EventRow = React.memo(function EventRow({ event }: { event: DisplayEvent }) {
@@ -274,32 +275,39 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
 
   const tail = lastLine(event.text, 140);
   const reasoningTail = event.reasoning ? lastLine(event.reasoning, 120) : "";
+  const toolCallBuild = event.toolCallBuild;
   // Four distinct phases a turn can be in — label them plainly so
   // the user doesn't have to decode "streaming · 391 + think 4506
   // chars" to figure out what's happening:
   //   pre-first-byte: request in flight, no bytes back yet
   //   reasoning-only: R1 thinking, no visible content yet
+  //   tool-call-only: tool_call arguments streaming, no content/reasoning bytes
   //   writing: content streaming (R1 has already produced its thought)
   //   both: rare — content present AND reasoning still growing
   // We can't cheaply distinguish "reasoning still growing" from
   // "reasoning finished but we already saw it", so when content is
   // present we just say "writing response" and surface both counts.
-  const preFirstByte = !event.text && !event.reasoning;
-  const reasoningOnly = !event.text && !!event.reasoning;
+  const preFirstByte = !event.text && !event.reasoning && !toolCallBuild;
+  const reasoningOnly = !event.text && !!event.reasoning && !toolCallBuild;
+  const toolCallOnly = !event.text && !event.reasoning && !!toolCallBuild;
   let label: string;
-  let labelColor: "yellow" | "cyan" | "green" | undefined;
+  let labelColor: "yellow" | "cyan" | "green" | "magenta" | undefined;
   if (preFirstByte) {
     label = "request sent · waiting for server";
     labelColor = "yellow";
   } else if (reasoningOnly) {
     label = `R1 reasoning · ${event.reasoning?.length ?? 0} chars of thought`;
     labelColor = "cyan";
+  } else if (toolCallOnly) {
+    label = `assembling tool call <${toolCallBuild.name}> · ${toolCallBuild.chars} chars of arguments`;
+    labelColor = "magenta";
   } else {
-    // Content phase. If reasoning is non-empty we include its size
-    // so the user knows R1 did a thinking pass before speaking.
-    label = event.reasoning
-      ? `writing response · ${event.text.length} chars · after ${event.reasoning.length} chars of reasoning`
-      : `writing response · ${event.text.length} chars`;
+    const parts: string[] = [`writing response · ${event.text.length} chars`];
+    if (event.reasoning) parts.push(`after ${event.reasoning.length} chars of reasoning`);
+    if (toolCallBuild) {
+      parts.push(`building tool call <${toolCallBuild.name}> · ${toolCallBuild.chars} chars`);
+    }
+    label = parts.join(" · ");
     labelColor = "green";
   }
   return (
