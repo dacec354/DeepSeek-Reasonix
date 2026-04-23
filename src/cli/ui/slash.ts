@@ -3,6 +3,7 @@ import type { CacheFirstLoop } from "../../loop.js";
 import type { InspectionReport } from "../../mcp/inspect.js";
 import { PROJECT_MEMORY_FILE, memoryEnabled, readProjectMemory } from "../../project-memory.js";
 import { deleteSession, listSessions } from "../../session.js";
+import { SkillStore } from "../../skills.js";
 import { DEEPSEEK_CONTEXT_TOKENS, DEFAULT_CONTEXT_TOKENS } from "../../telemetry.js";
 import { type MemoryScope, MemoryStore } from "../../user-memory.js";
 
@@ -158,6 +159,11 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     argsHint: "[list|show <name>|forget <name>|clear <scope> confirm]",
     summary: "show / manage pinned memory (REASONIX.md + ~/.reasonix/memory)",
   },
+  {
+    cmd: "skill",
+    argsHint: "[list|show <name>|<name> [args]]",
+    summary: "list / run user skills (<project>/.reasonix/skills + ~/.reasonix/skills)",
+  },
   { cmd: "think", summary: "dump the last turn's full R1 reasoning (reasoner only)" },
   { cmd: "retry", summary: "truncate & resend your last message (fresh sample)" },
   { cmd: "compact", argsHint: "[cap]", summary: "shrink oversized tool results in the log" },
@@ -258,6 +264,8 @@ export function handleSlash(
           "  /tool [N]                list tool calls (or dump full output of #N, 1=most recent)",
           "  /memory [sub]            show pinned memory (REASONIX.md + ~/.reasonix/memory).",
           "                            subs: list | show <name> | forget <name> | clear <scope> confirm",
+          "  /skill [sub]             list / run user skills (project/.reasonix/skills + ~/.reasonix/skills).",
+          "                            subs: list | show <name> | <name> [args] (injects skill body as user turn)",
           "  /retry                   truncate & resend your last message (fresh sample from the model)",
           "  /apply                   (code mode) commit the pending edit blocks to disk",
           "  /discard                 (code mode) drop pending edits without writing",
@@ -354,6 +362,11 @@ export function handleSlash(
 
     case "memory": {
       return handleMemorySlash(args, ctx);
+    }
+
+    case "skill":
+    case "skills": {
+      return handleSkillSlash(args, ctx);
     }
 
     case "think":
@@ -629,6 +642,93 @@ export function handleSlash(
     default:
       return { unknown: true, info: `unknown command: /${cmd}  (try /help)` };
   }
+}
+
+/**
+ * `/skill` family. Bare `/skill` (or `/skill list`) prints the
+ * discovered skills from `<projectRoot>/.reasonix/skills` (code mode
+ * only) + `~/.reasonix/skills`. `/skill show <name>` dumps one body
+ * inline for reading. `/skill <name> [args...]` injects the skill body
+ * as a user turn via `resubmit` — the same mechanism `/apply-plan`
+ * uses — so the next model turn runs with the skill's instructions
+ * fresh in the log.
+ *
+ * Project scope is only populated when the session has a `codeRoot`
+ * (set by `reasonix code`). In plain chat mode the store reads the
+ * global scope only, matching how user-memory behaves.
+ */
+function handleSkillSlash(args: string[], ctx: SlashContext): SlashResult {
+  const store = new SkillStore({ projectRoot: ctx.codeRoot });
+  const sub = (args[0] ?? "").toLowerCase();
+
+  if (sub === "" || sub === "list" || sub === "ls") {
+    const skills = store.list();
+    if (skills.length === 0) {
+      const lines = ["no skills found. Reasonix reads skills from:"];
+      if (store.hasProjectScope()) {
+        lines.push(
+          "  · <project>/.reasonix/skills/<name>/SKILL.md  (or <name>.md)  — project scope",
+        );
+      }
+      lines.push("  · ~/.reasonix/skills/<name>/SKILL.md  (or <name>.md)  — global scope");
+      if (!store.hasProjectScope()) {
+        lines.push("  (project scope is only active in `reasonix code`)");
+      }
+      lines.push(
+        "",
+        "Each file's frontmatter needs at least `name` and `description`.",
+        "Invoke a skill with `/skill <name> [args]` or by asking the model to call `run_skill`.",
+      );
+      return { info: lines.join("\n") };
+    }
+    const lines = [`User skills (${skills.length}):`];
+    for (const s of skills) {
+      const scope = `(${s.scope})`.padEnd(11);
+      const name = s.name.padEnd(24);
+      const desc = s.description.length > 70 ? `${s.description.slice(0, 69)}…` : s.description;
+      lines.push(`  ${scope} ${name}  ${desc}`);
+    }
+    lines.push("");
+    lines.push("View body: /skill show <name>   Run: /skill <name> [args]");
+    return { info: lines.join("\n") };
+  }
+
+  if (sub === "show" || sub === "cat") {
+    const target = args[1];
+    if (!target) return { info: "usage: /skill show <name>" };
+    const skill = store.read(target);
+    if (!skill) return { info: `no skill found: ${target}` };
+    return {
+      info: [
+        `▸ ${skill.name}  (${skill.scope})`,
+        skill.description ? `  ${skill.description}` : "",
+        `  ${skill.path}`,
+        "",
+        skill.body,
+      ]
+        .filter((l) => l !== "")
+        .join("\n"),
+    };
+  }
+
+  // Bare `/skill <name> [args...]` — inject the body as a user turn.
+  // The first arg is the skill name; remaining args are forwarded
+  // verbatim as the skill's "Arguments:" line.
+  const name = args[0] ?? "";
+  const skill = store.read(name);
+  if (!skill) {
+    return {
+      info: `no skill found: ${name}  (try /skill list)`,
+    };
+  }
+  const extra = args.slice(1).join(" ").trim();
+  const header = `# Skill: ${skill.name}${skill.description ? `\n> ${skill.description}` : ""}`;
+  const argsLine = extra ? `\n\nArguments: ${extra}` : "";
+  const payload = `${header}\n\n${skill.body}${argsLine}`;
+  return {
+    info: `▸ running skill: ${skill.name}${extra ? ` — ${extra}` : ""}`,
+    resubmit: payload,
+  };
 }
 
 /**

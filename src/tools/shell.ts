@@ -44,8 +44,14 @@ export interface ShellToolsOptions {
   /**
    * Extra command-name prefixes the user explicitly trusts. Added on
    * top of the built-in allowlist. Examples: `["my-ci-script", "lint"]`.
+   *
+   * Accepts either a fixed array (captured once at registration) or a
+   * getter called on every dispatch. The getter form is load-bearing:
+   * when the TUI's `ShellConfirm` writes a new prefix to config mid-
+   * session, the running `run_command` must pick it up immediately —
+   * otherwise the same command gets re-prompted until the next launch.
    */
-  extraAllowed?: string[];
+  extraAllowed?: readonly string[] | (() => readonly string[]);
   /**
    * When true, skip the allowlist entirely and auto-run every command.
    * Off by default — this is an escape hatch for non-interactive use
@@ -370,7 +376,36 @@ export function prepareSpawn(
     };
   }
 
+  // Bare command names that PATH × PATHEXT couldn't resolve to an
+  // on-disk file — these are almost always cmd.exe built-ins (`dir`,
+  // `echo`, `type`, `ver`, `vol`, `where`, `help`, …) which don't
+  // exist as standalone executables. Direct spawn crashes with ENOENT;
+  // routing through cmd.exe lets the built-in resolve, and if it's
+  // genuinely unknown the user gets the standard "'foo' is not
+  // recognized" message instead of a raw spawn failure.
+  if (isBareWindowsName(resolved) && resolved === head) {
+    const cmdline = [head, ...tail].map(quoteForCmdExe).join(" ");
+    return {
+      bin: "cmd.exe",
+      args: ["/d", "/s", "/c", cmdline],
+      spawnOverrides: { windowsVerbatimArguments: true },
+    };
+  }
+
   return { bin: resolved, args: [...tail], spawnOverrides: {} };
+}
+
+/**
+ * True when `s` looks like a bare executable name — no path separator,
+ * no drive letter, no extension. Such names on Windows, when absent
+ * from PATH × PATHEXT, are almost always cmd.exe built-ins.
+ */
+function isBareWindowsName(s: string): boolean {
+  if (!s) return false;
+  if (s.includes("/") || s.includes("\\")) return false;
+  if (pathMod.isAbsolute(s)) return false;
+  if (pathMod.extname(s)) return false;
+  return true;
 }
 
 /**
@@ -404,7 +439,17 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
   const rootDir = pathMod.resolve(opts.rootDir);
   const timeoutSec = opts.timeoutSec ?? DEFAULT_TIMEOUT_SEC;
   const maxOutputChars = opts.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
-  const extraAllowed = opts.extraAllowed ?? [];
+  // Resolved on every dispatch so newly-persisted "always allow"
+  // prefixes take effect inside the session that added them, not just
+  // on the next launch. Static arrays are wrapped into a constant
+  // getter so the call site below is uniform.
+  const getExtraAllowed: () => readonly string[] =
+    typeof opts.extraAllowed === "function"
+      ? opts.extraAllowed
+      : (() => {
+          const snapshot = opts.extraAllowed ?? [];
+          return () => snapshot;
+        })();
   const allowAll = opts.allowAll ?? false;
 
   registry.register({
@@ -419,7 +464,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
       if (allowAll) return true;
       const cmd = typeof args?.command === "string" ? args.command.trim() : "";
       if (!cmd) return false;
-      return isAllowed(cmd, extraAllowed);
+      return isAllowed(cmd, getExtraAllowed());
     },
     parameters: {
       type: "object",
@@ -439,7 +484,7 @@ export function registerShellTools(registry: ToolRegistry, opts: ShellToolsOptio
     fn: async (args: { command: string; timeoutSec?: number }, ctx) => {
       const cmd = args.command.trim();
       if (!cmd) throw new Error("run_command: empty command");
-      if (!allowAll && !isAllowed(cmd, extraAllowed)) {
+      if (!allowAll && !isAllowed(cmd, getExtraAllowed())) {
         throw new NeedsConfirmationError(cmd);
       }
       const effectiveTimeout = Math.max(1, Math.min(600, args.timeoutSec ?? timeoutSec));

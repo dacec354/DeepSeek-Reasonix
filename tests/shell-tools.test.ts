@@ -184,6 +184,34 @@ describe("registerShellTools — dispatch integration", () => {
     expect(out).toMatch(/\[exit 0\]/);
     expect(out).toContain("ok");
   });
+
+  it("extraAllowed as a getter is re-read on every dispatch", async () => {
+    // Regression: picking "always allow" in ShellConfirm wrote to disk
+    // but the running run_command captured a stale snapshot, so the
+    // same command got re-prompted until the next launch. Getter form
+    // fixes this by re-resolving the allowlist on each call.
+    //
+    // `node -e` is deliberately NOT in BUILTIN_ALLOWLIST — only
+    // `node --version` / `node -v` are — so the "before" call must go
+    // through the extraAllowed path to succeed.
+    const cmd = "node -e \"process.stdout.write('ok')\"";
+    const registry = new ToolRegistry();
+    const list: string[] = [];
+    registerShellTools(registry, { rootDir: tmp, extraAllowed: () => list });
+
+    const before = await registry.dispatch("run_command", JSON.stringify({ command: cmd }));
+    expect(before).toMatch(/NeedsConfirmationError/);
+
+    // Simulate the TUI's "always allow" click — mutate the source the
+    // getter reads. No re-registration; the live tool instance picks
+    // it up.
+    list.push("node -e");
+
+    const after = await registry.dispatch("run_command", JSON.stringify({ command: cmd }));
+    expect(after).not.toMatch(/NeedsConfirmationError/);
+    expect(after).toMatch(/\[exit 0\]/);
+    expect(after).toContain("ok");
+  });
 });
 
 describe("formatCommandResult", () => {
@@ -413,17 +441,59 @@ describe("prepareSpawn", () => {
     expect(out.args[3]).toBe('C:\\tools\\tool.CMD "a&b" "c|d"');
   });
 
-  it("falls back to raw cmd when PATHEXT lookup misses", () => {
-    const out = prepareSpawn(["bogus", "arg"], {
+  it("routes bare unresolved Windows commands through cmd.exe (builtins)", () => {
+    // `dir`, `echo`, `type`, `ver`, … are cmd.exe built-ins — they
+    // don't exist as standalone exes, so PATHEXT lookup misses and a
+    // direct spawn ENOENTs. Wrapping in cmd.exe lets them resolve,
+    // and gives unknown commands a proper "'x' is not recognized"
+    // exit code instead of a raw spawn failure.
+    const out = prepareSpawn(["dir", ".reasonix"], {
       platform: "win32",
       env: { PATH: "C:\\nope", PATHEXT: ".EXE" },
       pathDelimiter: ";",
       isFile: () => false,
     });
-    // No resolution, no .cmd/.bat suffix ⇒ passes through; spawn will
-    // ENOENT naturally and the caller surfaces a clean error.
-    expect(out.bin).toBe("bogus");
+    expect(out.bin).toBe("cmd.exe");
+    expect(out.args).toEqual(["/d", "/s", "/c", "dir .reasonix"]);
+    expect(out.spawnOverrides.windowsVerbatimArguments).toBe(true);
+  });
+
+  it("cmd.exe builtin wrapping quotes metacharacter args", () => {
+    const out = prepareSpawn(["echo", "a & b"], {
+      platform: "win32",
+      env: { PATH: "C:\\nope", PATHEXT: ".EXE" },
+      pathDelimiter: ";",
+      isFile: () => false,
+    });
+    expect(out.bin).toBe("cmd.exe");
+    expect(out.args[3]).toBe('echo "a & b"');
+  });
+
+  it("does not wrap paths-with-separators through cmd.exe", () => {
+    // Absolute or slash-containing inputs are NOT bare names; they're
+    // explicit disk paths — if the user points at a nonexistent one
+    // we want the spawn to ENOENT plainly, not through cmd.exe.
+    const out = prepareSpawn(["C:\\missing\\tool.exe", "arg"], {
+      platform: "win32",
+      env: { PATH: "", PATHEXT: ".EXE" },
+      pathDelimiter: ";",
+      isFile: () => false,
+    });
+    expect(out.bin).toBe("C:\\missing\\tool.exe");
     expect(out.args).toEqual(["arg"]);
+  });
+
+  it("does not wrap already-extensioned commands", () => {
+    // `node.exe` with no PATH hit → user passed an explicit name;
+    // pass it straight to spawn (will ENOENT if truly absent).
+    const out = prepareSpawn(["node.exe", "-v"], {
+      platform: "win32",
+      env: { PATH: "", PATHEXT: ".EXE" },
+      pathDelimiter: ";",
+      isFile: () => false,
+    });
+    expect(out.bin).toBe("node.exe");
+    expect(out.args).toEqual(["-v"]);
   });
 });
 

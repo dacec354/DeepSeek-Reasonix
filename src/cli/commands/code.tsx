@@ -26,6 +26,7 @@ import { registerFilesystemTools } from "../../tools/filesystem.js";
 import { registerMemoryTools } from "../../tools/memory.js";
 import { registerPlanTool } from "../../tools/plan.js";
 import { registerShellTools } from "../../tools/shell.js";
+import { registerSkillTools } from "../../tools/skills.js";
 import { chatCommand } from "./chat.js";
 
 export interface CodeOptions {
@@ -61,7 +62,10 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
     rootDir,
     // Per-project "always allow" list persisted from prior ShellConfirm
     // choices; merged on top of the built-in allowlist in shell.ts.
-    extraAllowed: loadProjectShellAllowed(rootDir),
+    // GETTER form — re-read every dispatch so a prefix the user adds
+    // via ShellConfirm mid-session takes effect on the next shell call
+    // instead of waiting for `/new` or a relaunch.
+    extraAllowed: () => loadProjectShellAllowed(rootDir),
   });
   // `submit_plan` is always in the spec list so the prefix cache stays
   // stable across plan-mode toggles (Pillar 1). The tool itself is a
@@ -72,6 +76,12 @@ export async function codeCommand(opts: CodeOptions = {}): Promise<void> {
   // Project scope hashes off rootDir so switching projects gets a fresh
   // per-project memory store; the global scope is shared across runs.
   registerMemoryTools(tools, { projectRoot: rootDir });
+  // `run_skill` — loads user-authored prompt packs on demand. The
+  // index itself (names + descriptions) is already pinned into the
+  // system prompt by `applyMemoryStack`; this tool serves the bodies.
+  // Passing projectRoot surfaces `<rootDir>/.reasonix/skills/` alongside
+  // the global scope.
+  registerSkillTools(tools, { projectRoot: rootDir });
 
   process.stderr.write(
     `▸ reasonix code: rooted at ${rootDir}, session "${session ?? "(ephemeral)"}" · ${tools.size} native tool(s)\n`,

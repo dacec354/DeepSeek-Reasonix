@@ -3,6 +3,84 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.21] — 2026-04-22
+
+**Headline:** Skills — user-authored prompt packs, two-scope layout
+matching user-memory.
+
+Reasonix discovers skills under `<project>/.reasonix/skills/` (project
+scope) and `~/.reasonix/skills/` (global scope). Project wins on name
+collisions — per-repo overrides of a global skill work the way users
+expect. Deliberately NOT tied to any other tool's directory
+convention (`.claude/`, `.glm/`, etc.): Reasonix is model-agnostic at
+the conversation layer, so coupling the skill filesystem to one
+vendor would break anyone running a different backend.
+
+The pinned index (names + one-line descriptions) lives in the
+immutable system prefix; bodies stay lazy and enter the append-only
+log only when invoked — either by the model calling the new
+`run_skill` tool or by the user typing `/skill <name> [args]`. No
+DAG engine, no workflow DSL — the model reads the skill's prose and
+continues the normal tool-use loop from there. Pillar 1's cache
+invariants are preserved: adding skills grows the pinned index
+(under a 4k char cap, with a truncation marker) but never alters
+the rest of the prefix.
+
+### Added
+
+- **`src/skills.ts`** — `SkillStore` with `SkillScope` of `"project"`
+  or `"global"`, both layouts recognized (`{name}/SKILL.md` and flat
+  `{name}.md`). `applySkillsIndex` composer is pinned into
+  `applyMemoryStack` alongside REASONIX.md + user memory, receiving
+  the same `rootDir` so the project scope picks up
+  `<rootDir>/.reasonix/skills/`.
+- **`run_skill` tool** (`src/tools/skills.ts`) — read-only, returns
+  the full markdown body plus an optional forwarded `Arguments:` line.
+  Registered in `reasonix chat` (global only) and `reasonix code`
+  (project + global).
+- **`/skill` slash command** — `list` / `show <name>` / bare
+  `<name> [args]` form. The bare form injects the skill body as a
+  user turn via the same `resubmit` hook `/apply-plan` uses. Reads
+  project scope from `ctx.codeRoot`, mirroring how `/memory` behaves.
+
+### Notes
+
+- Each skill's `allowed-tools` frontmatter is parsed but **ignored**
+  in v1. Reasonix's tool namespace (`filesystem`, `shell`, `web`)
+  doesn't one-to-one map onto other clients' names; the model reads
+  the prose instructions and picks our equivalents. Will revisit
+  once the tradeoffs are clearer.
+- What we explicitly did **not** add: workflow DSL, DAG scheduler,
+  parallel branches, sub-agents. Skills are prose; the model does the
+  sequencing. This keeps single-loop + append-only + cache-first
+  intact — the architectural non-goal "no multi-agent orchestration"
+  stands.
+
+### Fixed
+
+- **`ShellConfirm` "always allow" did not take effect until relaunch.**
+  The `run_command` tool captured `extraAllowed` as a snapshot at
+  registration time, so a prefix the user approved mid-session was
+  written to `~/.reasonix/config.json` but the in-memory tool still
+  refused it — the next invocation re-triggered the confirmation
+  modal. `ShellToolsOptions.extraAllowed` now accepts a getter in
+  addition to a static array; `reasonix code` passes
+  `() => loadProjectShellAllowed(rootDir)` so the allowlist is
+  re-read from disk on every dispatch. Static-array callers keep
+  working unchanged.
+- **Windows cmd.exe built-ins (`dir`, `echo`, `type`, `ver`, …)
+  crashed with ENOENT.** These aren't standalone executables, so
+  `PATH × PATHEXT` lookup misses and `spawn dir` fails. `prepareSpawn`
+  now routes bare unresolved Windows commands through
+  `cmd.exe /d /s /c "<cmd> <args…>"` with verbatim-args + manual
+  metacharacter quoting — same wrapping strategy we already use for
+  `.cmd`/`.bat` files. Built-ins resolve correctly; genuinely unknown
+  commands get the standard "'foo' is not recognized as an internal
+  or external command" message instead of a raw spawn error.
+  Already-extensioned names (`node.exe`) and paths-with-separators
+  (`C:\tool.exe`) still pass through unwrapped so an explicit "I
+  know where this is" invocation fails loudly when it's missing.
+
 ## [0.4.19] — 2026-04-22
 
 **Headline:** Windows shell hotfix + StormBreaker visibility.

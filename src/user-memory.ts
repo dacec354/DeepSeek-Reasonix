@@ -26,6 +26,7 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { applyProjectMemory, memoryEnabled } from "./project-memory.js";
+import { applySkillsIndex } from "./skills.js";
 
 export const USER_MEMORY_DIR = "memory";
 export const MEMORY_INDEX_FILE = "MEMORY.md";
@@ -380,11 +381,15 @@ export function applyUserMemory(
 }
 
 /**
- * Compose REASONIX.md + user memory in one call. Drop-in replacement
- * for `applyProjectMemory` at CLI entry points — preserves the existing
- * REASONIX_PROJECT block order, then appends the two user-memory blocks.
+ * Compose every lazy-loaded prefix block in one call: REASONIX.md,
+ * user memory (global + project), and the skills index. Drop-in
+ * replacement for `applyProjectMemory` at CLI entry points. Stacking
+ * order is stable — the prefix hash only changes when block *content*
+ * changes, not when this helper is called a second time with the same
+ * filesystem state.
  */
 export function applyMemoryStack(basePrompt: string, rootDir: string): string {
   const withProject = applyProjectMemory(basePrompt, rootDir);
-  return applyUserMemory(withProject, { projectRoot: rootDir });
+  const withMemory = applyUserMemory(withProject, { projectRoot: rootDir });
+  return applySkillsIndex(withMemory, { projectRoot: rootDir });
 }

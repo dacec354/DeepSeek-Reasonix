@@ -16,6 +16,7 @@ import {
 } from "../../session.js";
 import { ToolRegistry } from "../../tools.js";
 import { registerMemoryTools } from "../../tools/memory.js";
+import { registerSkillTools } from "../../tools/skills.js";
 import { registerWebTools } from "../../tools/web.js";
 import { App } from "../ui/App.js";
 import { SessionPicker } from "../ui/SessionPicker.js";
@@ -251,6 +252,10 @@ export async function chatCommand(opts: ChatOptions): Promise<void> {
   if (!opts.seedTools) {
     if (!tools) tools = new ToolRegistry();
     registerMemoryTools(tools, {});
+    // Skills are a chat-mode concept too — load them here so plain
+    // `reasonix chat` users can invoke user-defined skills. Code mode
+    // registers its own copy alongside its other seed tools.
+    registerSkillTools(tools);
   }
 
   // Decide whether to show the session picker. It's gated on: session
