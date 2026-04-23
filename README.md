@@ -316,6 +316,15 @@ timeouts: 5s for blocking events, 30s for logging events; per-hook
 **Slash**: `/hooks` (list active hooks) · `/hooks reload` (re-read
 `settings.json` from disk without losing your session).
 
+### Staying current from inside the TUI
+
+`/update` inside a running session shows your current version, the
+last-resolved latest version (from the quiet 24h background check),
+and the shell command to run. The slash does *not* spawn
+`npm install` — stdio:inherit into a running Ink renderer corrupts
+the display. Exit the session and run `reasonix update` in a
+fresh shell when you actually want to install.
+
 ---
 
 ## `reasonix` — also works as general chat

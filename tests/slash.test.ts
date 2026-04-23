@@ -11,6 +11,7 @@ import {
 import { DeepSeekClient, Usage } from "../src/client.js";
 import { CacheFirstLoop } from "../src/loop.js";
 import { ImmutablePrefix } from "../src/memory.js";
+import { VERSION } from "../src/version.js";
 
 function makeLoop() {
   const client = new DeepSeekClient({
@@ -486,6 +487,33 @@ describe("handleSlash", () => {
     expect(suggestSlashCommands("HE").map((s) => s.cmd)).toEqual(["help"]);
     // Empty prefix returns everything (non-contextual).
     expect(suggestSlashCommands("").length).toBeGreaterThan(5);
+  });
+
+  describe("/update", () => {
+    it("reports pending check when latestVersion is null (offline / in flight)", () => {
+      const r = handleSlash("update", [], makeLoop(), { latestVersion: null });
+      expect(r.info).toMatch(/current: reasonix/);
+      expect(r.info).toMatch(/not yet resolved/);
+      expect(r.info).toMatch(/reasonix update/);
+    });
+
+    it("reports up-to-date when current matches latest", () => {
+      const r = handleSlash("update", [], makeLoop(), { latestVersion: VERSION });
+      expect(r.info).toMatch(/on the latest/);
+      expect(r.info).not.toMatch(/npm install/);
+    });
+
+    it("prints shell command when latest is newer than current", () => {
+      const r = handleSlash("update", [], makeLoop(), { latestVersion: "99.99.99" });
+      expect(r.info).toMatch(/99\.99\.99/);
+      expect(r.info).toMatch(/reasonix update/);
+      expect(r.info).toMatch(/npm install -g reasonix@latest/);
+    });
+
+    it("is surfaced by suggestSlashCommands", () => {
+      const names = suggestSlashCommands("up").map((s) => s.cmd);
+      expect(names).toContain("update");
+    });
   });
 
   it("suggestSlashCommands hides code-mode-only entries when codeMode=false", () => {

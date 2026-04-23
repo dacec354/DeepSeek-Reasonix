@@ -13,6 +13,7 @@ import { deleteSession, listSessions } from "../../session.js";
 import { SkillStore } from "../../skills.js";
 import { DEEPSEEK_CONTEXT_TOKENS, DEFAULT_CONTEXT_TOKENS } from "../../telemetry.js";
 import { type MemoryScope, MemoryStore } from "../../user-memory.js";
+import { VERSION, compareVersions, isNpxInstall } from "../../version.js";
 
 export interface SlashResult {
   /** Text to display back to the user as a system/info line. */
@@ -124,6 +125,21 @@ export interface SlashContext {
    * confirmation. Absent → `/hooks reload` replies "not available".
    */
   reloadHooks?: () => number;
+  /**
+   * Latest published version if App's background registry check
+   * has completed, `null` otherwise (still in flight OR offline).
+   * Drives `/update` — the slash shows whatever the async check
+   * already resolved, so the command is fully synchronous.
+   */
+  latestVersion?: string | null;
+  /**
+   * Fire-and-forget: kick off a fresh registry fetch. `/update`
+   * calls this whenever it encounters `latestVersion === null`
+   * so the user can rerun the slash a few seconds later and see
+   * a concrete answer. Absent → the slash just reports "pending"
+   * with no retry path.
+   */
+  refreshLatestVersion?: () => void;
 }
 
 export interface McpServerSummary {
@@ -182,6 +198,10 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     cmd: "hooks",
     argsHint: "[reload]",
     summary: "list active hooks (settings.json under .reasonix/) · reload re-reads from disk",
+  },
+  {
+    cmd: "update",
+    summary: "show current vs latest version + the shell command to upgrade",
   },
   { cmd: "think", summary: "dump the last turn's full R1 reasoning (reasoner only)" },
   { cmd: "retry", summary: "truncate & resend your last message (fresh sample)" },
@@ -391,6 +411,10 @@ export function handleSlash(
     case "hook":
     case "hooks": {
       return handleHooksSlash(args, loop, ctx);
+    }
+
+    case "update": {
+      return handleUpdateSlash(ctx);
     }
 
     case "think":
@@ -681,6 +705,60 @@ export function handleSlash(
  * (set by `reasonix code`). In plain chat mode the store reads the
  * global scope only, matching how user-memory behaves.
  */
+/**
+ * `/update` — inside the TUI we deliberately do NOT spawn `npm install`.
+ * stdio:inherit into a running Ink renderer corrupts the display, and
+ * the process being upgraded is the same process that's still reading
+ * its own binaries (messy on Windows). Instead we surface what we
+ * already know from the App's background registry check and print the
+ * exact shell command the user should run after exiting.
+ *
+ * The `latestVersion` ctx field is populated by App.tsx's mount-time
+ * `getLatestVersion()` effect. When it's `null` we report the check
+ * as pending/offline — still a useful output (current version + how
+ * to force a fresh check from another terminal).
+ */
+function handleUpdateSlash(ctx: SlashContext): SlashResult {
+  const latest = ctx.latestVersion ?? null;
+  const lines: string[] = [`current: reasonix ${VERSION}`];
+  if (latest === null) {
+    // Kick off a fresh fetch so a follow-up /update a few seconds
+    // later has a real answer instead of the same pending message.
+    ctx.refreshLatestVersion?.();
+    lines.push(
+      "latest:  (not yet resolved — background check in flight or offline)",
+      "",
+      "triggered a fresh registry fetch — retry `/update` in a few seconds,",
+      "or run `reasonix update` in another terminal to force it synchronously.",
+    );
+    return { info: lines.join("\n") };
+  }
+  lines.push(`latest:  reasonix ${latest}`);
+  const diff = compareVersions(VERSION, latest);
+  if (diff >= 0) {
+    lines.push("", "you're on the latest. nothing to do.");
+    return { info: lines.join("\n") };
+  }
+  if (isNpxInstall()) {
+    lines.push(
+      "",
+      "you're running via npx — the next `npx reasonix ...` launch will auto-fetch.",
+      "to force a refresh sooner: `npm cache clean --force`.",
+    );
+  } else {
+    lines.push(
+      "",
+      "to upgrade, exit this session and run:",
+      "  reasonix update           (interactive, dry-run supported via --dry-run)",
+      "  npm install -g reasonix@latest   (direct)",
+      "",
+      "in-session install is deliberately disabled — the npm spawn would",
+      "corrupt this TUI's rendering and Windows can lock the running binary.",
+    );
+  }
+  return { info: lines.join("\n") };
+}
+
 function handleHooksSlash(args: string[], loop: CacheFirstLoop, ctx: SlashContext): SlashResult {
   const sub = (args[0] ?? "").toLowerCase();
 

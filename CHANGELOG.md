@@ -65,8 +65,15 @@ a programming language, we don't need to invent one.
 - **`/hooks` slash command**. `list` (default) groups loaded hooks
   by event with scope tags; `reload` re-reads settings.json from
   disk via the App-provided `reloadHooks` callback.
+- **`/update` slash command**. Shows current vs the last-resolved
+  latest (piggybacks on App.tsx's mount-time background check) and
+  prints the exact shell command to upgrade. Deliberately does NOT
+  spawn `npm install` from inside the TUI — stdio:inherit into a
+  running Ink renderer corrupts the display, and on Windows the
+  currently-running binary can be locked. Users exit the session
+  and run `reasonix update` in a fresh shell.
 
-### Tests (+32, suite 672 → 704)
+### Tests (+36, suite 672 → 708)
 
 - `tests/hooks.test.ts` — `loadHooks` (empty / project+global / array
   order / ignore malformed entries / tolerate malformed JSON / no
@@ -84,7 +91,8 @@ a programming language, we don't need to invent one.
   `process.cwd()` and honors override, no-tool turn doesn't fire
   PreToolUse hooks.
 - `tests/slash.test.ts` — updated `suggestSlashCommands("h")` to
-  include the new `hooks` command.
+  include the new `hooks` command; added 4 tests for `/update`
+  (pending / up-to-date / upgrade-available / suggest-surfaces-it).
 
 ---
 

@@ -138,11 +138,16 @@ export function App({
   // tracks reality. `null` means either the endpoint failed or we
   // haven't fetched yet; the panel hides the cell in that case.
   const [balance, setBalance] = useState<{ currency: string; total: number } | null>(null);
-  // Latest published version, populated in the background from the
-  // npm registry. `null` during the in-flight window and when the
-  // install is already current (or offline); rendered only when
-  // there's something newer to nudge the user toward.
-  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+  // Latest published version the npm registry returned, REGARDLESS
+  // of whether it's newer than what we're running. `null` only while
+  // the background check is in flight or when the network fails —
+  // so `/update` can distinguish "on latest" from "still fetching".
+  // The yellow header badge is derived: it only lights up when the
+  // fetched version is STRICTLY newer, but the slash surfaces the
+  // raw value so the user always gets a concrete number.
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const updateAvailable =
+    latestVersion && compareVersions(VERSION, latestVersion) < 0 ? latestVersion : null;
   // Loaded user hooks (project + global settings.json). Stays mutable
   // so `/hooks reload` can rescan disk without reconstructing the
   // loop. The loop holds a parallel reference for its tool-event
@@ -321,13 +326,15 @@ export function App({
   // Background registry check — 24h disk cache absorbs repeated
   // launches, timeout bounded so a flaky network doesn't delay the
   // notification. Set to `null` on failure (silent: no network, no
-  // problem) and on "already latest" so the header stays quiet.
+  // problem). We store the raw version regardless of whether it's
+  // newer; the header badge's newer-only check happens at the
+  // `updateAvailable` derivation above.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const latest = await getLatestVersion();
       if (cancelled || !latest) return;
-      if (compareVersions(VERSION, latest) < 0) setUpdateAvailable(latest);
+      setLatestVersion(latest);
     })();
     return () => {
       cancelled = true;
@@ -587,6 +594,13 @@ export function App({
             const fresh = loadHooks({ projectRoot: codeMode?.rootDir });
             setHookList(fresh);
             return fresh.length;
+          },
+          latestVersion,
+          refreshLatestVersion: () => {
+            void (async () => {
+              const fresh = await getLatestVersion({ force: true });
+              if (fresh) setLatestVersion(fresh);
+            })();
           },
         });
         if (result.exit) {
@@ -932,6 +946,7 @@ export function App({
       hookCwd,
       hookList,
       loop,
+      latestVersion,
       mcpSpecs,
       mcpServers,
       planMode,
