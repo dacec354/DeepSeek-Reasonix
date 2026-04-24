@@ -21,7 +21,14 @@ export type DisplayRole =
    * user reads the whole thing in the permanent Static log and the
    * PlanConfirm modal below it stays a tight picker.
    */
-  | "plan";
+  | "plan"
+  /**
+   * One step of an approved plan ticked off via `mark_step_complete`.
+   * Rendered as a compact `✓ step-id · title — result (N/M)` row so
+   * the user can glance at the scrollback and see how far along the
+   * execution is without scrolling through every tool call.
+   */
+  | "step-progress";
 
 export interface DisplayEvent {
   id: string;
@@ -36,6 +43,18 @@ export interface DisplayEvent {
   repair?: string;
   streaming?: boolean;
   toolCallBuild?: { name: string; chars: number; index?: number; readyCount?: number };
+  /**
+   * Populated on `step-progress` rows: the step id, optional title,
+   * completion counter, and optional notes. Rendered into the compact
+   * single-row layout — no other role reads these fields.
+   */
+  stepProgress?: {
+    stepId: string;
+    title?: string;
+    completed: number;
+    total: number;
+    notes?: string;
+  };
   /**
    * Render a thin horizontal rule above this event. Used to mark
    * "start of a new user turn" so long scrollbacks get visual
@@ -184,6 +203,34 @@ export const EventRow = React.memo(function EventRow({
         <Box marginTop={1} flexDirection="column">
           <Markdown text={event.text} projectRoot={projectRoot} />
         </Box>
+      </Box>
+    );
+  }
+  if (event.role === "step-progress") {
+    const sp = event.stepProgress;
+    const counter = sp && sp.total > 0 ? `  (${sp.completed}/${sp.total})` : "";
+    const label = sp?.title ? `${sp.stepId} · ${sp.title}` : (sp?.stepId ?? "");
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Box>
+          <Text color="green" bold>
+            ✓
+          </Text>
+          <Text color="green">{`  ${label}`}</Text>
+          <Text dimColor>{counter}</Text>
+        </Box>
+        {event.text ? (
+          <Box paddingLeft={2}>
+            <Text dimColor>{event.text}</Text>
+          </Box>
+        ) : null}
+        {sp?.notes ? (
+          <Box paddingLeft={2}>
+            <Text color="yellow" dimColor>
+              {`note: ${sp.notes}`}
+            </Text>
+          </Box>
+        ) : null}
       </Box>
     );
   }

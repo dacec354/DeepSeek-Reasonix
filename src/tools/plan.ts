@@ -6,17 +6,21 @@
  *   1. User types `/plan` → registry switches to plan-mode enforcement
  *      (write tools refused at dispatch; reads + allowlisted shell
  *      still work).
- *   2. Model explores, then calls `submit_plan` with a markdown plan.
+ *   2. Model explores, then calls `submit_plan` with a markdown plan
+ *      (and, optionally, a structured `steps` array).
  *   3. `submit_plan` throws `PlanProposedError`, which the TUI renders
  *      as a picker: Approve / Refine / Cancel.
  *   4. Approve → registry leaves plan mode, a synthetic user message
  *      "The plan has been approved. Implement it now." is pushed into
  *      the loop so the next turn executes.
+ *   5. During execution the model may call `mark_step_complete` after
+ *      each step; the TUI shows a progress row per completion.
  *
  * The read-only enforcement lives in `ToolRegistry.dispatch` via
- * `readOnly` / `readOnlyCheck`; this file only ships the `submit_plan`
- * escape hatch and the error type that carries the plan out of the
- * registry without stuffing it into the message.
+ * `readOnly` / `readOnlyCheck`; this file ships the `submit_plan`
+ * escape hatch, the `mark_step_complete` progress signal, and the
+ * error type that carries the plan out of the registry without
+ * stuffing it into the message.
  *
  * We do not change `ImmutablePrefix.toolSpecs` when plan mode toggles —
  * that would break Pillar 1's prefix cache. Instead the same full spec
@@ -28,30 +32,50 @@
 import type { ToolRegistry } from "../tools.js";
 
 /**
+ * Structured step in a submitted plan. Optional — plans can still be
+ * pure markdown. When provided, each step is addressable by `id` so
+ * the model can later mark it complete via `mark_step_complete`.
+ */
+export interface PlanStep {
+  id: string;
+  title: string;
+  action: string;
+}
+
+/**
  * Thrown by `submit_plan` when plan mode is active, carrying the plan
- * text the TUI will render for the user's approval.
+ * text (and optional structured steps) the TUI will render for the
+ * user's approval.
  *
  * Implements the `toToolResult` protocol so `ToolRegistry.dispatch`
  * serializes the full plan into the tool-result JSON (not just the
- * error message). The TUI parses `{ error, plan }` from the tool event
- * and mounts the `PlanConfirm` picker.
+ * error message). The TUI parses `{ error, plan, steps? }` from the
+ * tool event and mounts the `PlanConfirm` picker.
  */
 export class PlanProposedError extends Error {
   readonly plan: string;
-  constructor(plan: string) {
+  readonly steps?: PlanStep[];
+  constructor(plan: string, steps?: PlanStep[]) {
     super(
       "PlanProposedError: plan submitted. STOP calling tools now — the TUI has shown the plan to the user. Wait for their next message; it will either approve (you'll then implement the plan), request a refinement (you should explore more and submit an updated plan), or cancel (drop the plan and ask what they want instead). Don't call any tools in the meantime.",
     );
     this.name = "PlanProposedError";
     this.plan = plan;
+    this.steps = steps;
   }
 
   /**
    * Structured tool-result shape. Consumed by the TUI to extract the
-   * plan without regex-scraping the error message.
+   * plan without regex-scraping the error message. `steps` is only
+   * included when the model supplied a structured list.
    */
-  toToolResult(): { error: string; plan: string } {
-    return { error: `${this.name}: ${this.message}`, plan: this.plan };
+  toToolResult(): { error: string; plan: string; steps?: PlanStep[] } {
+    const payload: { error: string; plan: string; steps?: PlanStep[] } = {
+      error: `${this.name}: ${this.message}`,
+      plan: this.plan,
+    };
+    if (this.steps && this.steps.length > 0) payload.steps = this.steps;
+    return payload;
   }
 }
 
@@ -62,14 +86,49 @@ export interface PlanToolOptions {
    * event is also emitted; this is just earlier and friendlier to
    * test harnesses that don't want to parse JSON).
    */
-  onPlanSubmitted?: (plan: string) => void;
+  onPlanSubmitted?: (plan: string, steps?: PlanStep[]) => void;
+  /**
+   * Optional callback fired when the model marks a step complete via
+   * `mark_step_complete`. Analogous to `onPlanSubmitted` — the tool
+   * event carries the same payload, but this firing point is earlier
+   * and avoids JSON parsing for consumers that don't need it.
+   */
+  onStepCompleted?: (update: StepCompletion) => void;
+}
+
+/**
+ * Payload returned by `mark_step_complete`. The TUI parses the tool
+ * result JSON, looks for `kind: "step_completed"`, and pushes a
+ * progress row into the scrollback.
+ */
+export interface StepCompletion {
+  kind: "step_completed";
+  stepId: string;
+  title?: string;
+  result: string;
+  notes?: string;
+}
+
+function sanitizeSteps(raw: unknown): PlanStep[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const steps: PlanStep[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const id = typeof e.id === "string" ? e.id.trim() : "";
+    const title = typeof e.title === "string" ? e.title.trim() : "";
+    const action = typeof e.action === "string" ? e.action.trim() : "";
+    if (!id || !title || !action) continue;
+    steps.push({ id, title, action });
+  }
+  return steps.length > 0 ? steps : undefined;
 }
 
 export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions = {}): ToolRegistry {
   registry.register({
     name: "submit_plan",
     description:
-      "Submit a concrete plan to the user for review before executing. Use this for tasks that warrant a review gate — multi-file refactors, architecture changes, anything that would be expensive or confusing to undo. Skip it for small fixes (one-line typo, obvious bug with a clear fix) — just make the change. The user will either approve (you then implement it), ask for refinement, or cancel. If the user has already enabled /plan mode, writes are blocked at dispatch and you MUST use this. Write the plan as markdown with a one-line summary, a bulleted list of files to touch and what will change, and any risks or open questions.",
+      "Submit a concrete plan to the user for review before executing. Use this for tasks that warrant a review gate — multi-file refactors, architecture changes, anything that would be expensive or confusing to undo. Skip it for small fixes (one-line typo, obvious bug with a clear fix) — just make the change. The user will either approve (you then implement it), ask for refinement, or cancel. If the user has already enabled /plan mode, writes are blocked at dispatch and you MUST use this. Write the plan as markdown with a one-line summary, a bulleted list of files to touch and what will change, and any risks or open questions. Optionally pass `steps` — an array of {id, title, action} — so the UI can track per-step progress; call `mark_step_complete` after finishing each one.",
     readOnly: true,
     parameters: {
       type: "object",
@@ -79,22 +138,90 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
           description:
             "Markdown-formatted plan. Lead with a one-sentence summary. Then a file-by-file breakdown of what you'll change and why. Flag any risks or open questions at the end so the user can weigh in before you start.",
         },
+        steps: {
+          type: "array",
+          description:
+            "Optional structured step list. When provided, the UI shows a progress counter and each `mark_step_complete` call ticks one off. Use stable ids (step-1, step-2, ...). Skip for small plans where the markdown body is enough.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Stable id, e.g. step-1." },
+              title: { type: "string", description: "Short imperative title." },
+              action: {
+                type: "string",
+                description: "One-sentence description of the concrete action.",
+              },
+            },
+            required: ["id", "title", "action"],
+          },
+        },
       },
       required: ["plan"],
     },
-    fn: async (args: { plan: string }) => {
+    fn: async (args: { plan: string; steps?: unknown }) => {
       const plan = (args?.plan ?? "").trim();
       if (!plan) {
         throw new Error("submit_plan: empty plan — write a markdown plan and try again.");
       }
+      const steps = sanitizeSteps(args?.steps);
       // Always fire the picker, not just inside plan mode. Plan mode's
       // role is the *stronger* constraint — it forces you into read-only
       // until you submit. Outside plan mode, submit_plan is your own
       // call: use it when the task is large enough to deserve a review
       // gate (multi-file refactors, architecture changes, anything
       // that would be expensive to undo), skip it for small fixes.
-      opts.onPlanSubmitted?.(plan);
-      throw new PlanProposedError(plan);
+      opts.onPlanSubmitted?.(plan, steps);
+      throw new PlanProposedError(plan, steps);
+    },
+  });
+  registry.register({
+    name: "mark_step_complete",
+    description:
+      "Mark one step of the approved plan as done. Call this after finishing each step so the user sees progress in the TUI. Pass the `stepId` from the plan's steps array, a short `result` (what you did), and optional `notes` for anything surprising (errors, scope changes, follow-ups). This tool doesn't change any files — it only emits a progress signal. Don't call it if the plan didn't include structured steps, and don't invent ids that weren't in the original plan.",
+    readOnly: true,
+    parameters: {
+      type: "object",
+      properties: {
+        stepId: {
+          type: "string",
+          description:
+            "The id of the step being marked complete. Must match one from submit_plan's steps array.",
+        },
+        title: {
+          type: "string",
+          description:
+            "Optional. The step's title, echoed back for the UI. If omitted, the UI falls back to the id.",
+        },
+        result: {
+          type: "string",
+          description: "One-sentence summary of what was done for this step.",
+        },
+        notes: {
+          type: "string",
+          description:
+            "Optional. Anything surprising — blockers hit, assumptions revised, follow-ups for later steps.",
+        },
+      },
+      required: ["stepId", "result"],
+    },
+    fn: async (args: { stepId: string; title?: string; result: string; notes?: string }) => {
+      const stepId = (args?.stepId ?? "").trim();
+      const result = (args?.result ?? "").trim();
+      if (!stepId) {
+        throw new Error("mark_step_complete: stepId is required.");
+      }
+      if (!result) {
+        throw new Error(
+          "mark_step_complete: result is required — say in one sentence what you did.",
+        );
+      }
+      const title = typeof args?.title === "string" ? args.title.trim() || undefined : undefined;
+      const notes = typeof args?.notes === "string" ? args.notes.trim() || undefined : undefined;
+      const update: StepCompletion = { kind: "step_completed", stepId, result };
+      if (title) update.title = title;
+      if (notes) update.notes = notes;
+      opts.onStepCompleted?.(update);
+      return JSON.stringify(update);
     },
   });
   return registry;

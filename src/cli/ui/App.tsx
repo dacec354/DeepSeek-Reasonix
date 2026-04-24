@@ -27,6 +27,7 @@ import { CacheFirstLoop, DeepSeekClient, ImmutablePrefix } from "../../index.js"
 import type { LoopEvent } from "../../loop.js";
 import type { SessionSummary } from "../../telemetry.js";
 import type { ToolRegistry } from "../../tools.js";
+import type { PlanStep, StepCompletion } from "../../tools/plan.js";
 import { formatCommandResult, runCommand } from "../../tools/shell.js";
 import { registerSkillTools } from "../../tools/skills.js";
 import { formatSubagentResult, spawnSubagent } from "../../tools/subagent.js";
@@ -314,6 +315,13 @@ export function App({
   // because the user wouldn't expect `/tool` to reach back across
   // process boundaries.
   const toolHistoryRef = useRef<Array<{ toolName: string; text: string }>>([]);
+  // Structured steps captured from the most recent `submit_plan` call.
+  // Populated only when the model supplied `steps`; used by the
+  // `mark_step_complete` handler to look up the step title and compute
+  // the `N/M` counter. Reset on every new plan submission so a
+  // revised plan starts fresh — old completions don't spill over.
+  const planStepsRef = useRef<PlanStep[] | null>(null);
+  const completedStepIdsRef = useRef<Set<string>>(new Set());
   const [summary, setSummary] = useState<SessionSummary>({
     turns: 0,
     totalCostUsd: 0,
@@ -1450,19 +1458,25 @@ export function App({
             flush();
             setOngoingTool(null);
             setToolProgress(null);
-            toolHistoryRef.current.push({
-              toolName: ev.toolName ?? "?",
-              text: ev.content,
-            });
-            setHistorical((prev) => [
-              ...prev,
-              {
-                id: `t-${Date.now()}-${Math.random()}`,
-                role: "tool",
+            // `mark_step_complete` gets its own pretty scrollback row
+            // below — suppressing the raw tool row here keeps the log
+            // from showing the same JSON blob twice.
+            const isStepProgressTool = ev.toolName === "mark_step_complete";
+            if (!isStepProgressTool) {
+              toolHistoryRef.current.push({
+                toolName: ev.toolName ?? "?",
                 text: ev.content,
-                toolName: ev.toolName,
-              },
-            ]);
+              });
+              setHistorical((prev) => [
+                ...prev,
+                {
+                  id: `t-${Date.now()}-${Math.random()}`,
+                  role: "tool",
+                  text: ev.content,
+                  toolName: ev.toolName,
+                },
+              ]);
+            }
             // run_command rejected because the command isn't on the
             // auto-allow list. Stash it so the y/n fast-path can run
             // it after user confirmation. Only the latest such request
@@ -1486,7 +1500,7 @@ export function App({
               }
             }
             // submit_plan fired while plan mode was on — the registry
-            // serialized `{ error, plan }` via PlanProposedError's
+            // serialized `{ error, plan, steps? }` via PlanProposedError's
             // toToolResult(). Extract the plan and mount PlanConfirm.
             // Only the latest submission is tracked; a second overrides.
             if (
@@ -1495,15 +1509,18 @@ export function App({
               ev.content.includes('"PlanProposedError:')
             ) {
               try {
-                const parsed = JSON.parse(ev.content) as { plan?: unknown };
+                const parsed = JSON.parse(ev.content) as { plan?: unknown; steps?: unknown };
                 if (typeof parsed.plan === "string" && parsed.plan.trim()) {
                   const planText = parsed.plan.trim();
                   setPendingPlan(planText);
-                  // Push the plan into the Static scrollback so the
-                  // user can read it in full (and scroll back through
-                  // the terminal's own buffer), rather than being
-                  // constrained by the PlanConfirm modal's height cap.
-                  // The modal below then stays a small picker.
+                  // Structured steps are optional. When present, stash
+                  // them so mark_step_complete can look up titles and
+                  // compute N/M. A fresh submission always resets the
+                  // completed set — a revised plan shouldn't inherit
+                  // stale checkmarks from the previous proposal.
+                  const steps = Array.isArray(parsed.steps) ? (parsed.steps as PlanStep[]) : null;
+                  planStepsRef.current = steps;
+                  completedStepIdsRef.current = new Set();
                   setHistorical((prev) => [
                     ...prev,
                     {
@@ -1515,6 +1532,43 @@ export function App({
                 }
               } catch {
                 /* malformed payload — skip the picker */
+              }
+            }
+            // mark_step_complete fires during plan execution — the tool
+            // returns a `{ kind: "step_completed", ... }` JSON blob we
+            // translate into a compact scrollback row. Silent failure
+            // on parse errors: a malformed payload shouldn't take down
+            // the turn, it just means no progress row is shown.
+            if (ev.toolName === "mark_step_complete") {
+              try {
+                const parsed = JSON.parse(ev.content) as Partial<StepCompletion>;
+                const stepId = parsed.stepId;
+                if (parsed.kind === "step_completed" && typeof stepId === "string") {
+                  completedStepIdsRef.current.add(stepId);
+                  const total = planStepsRef.current?.length ?? 0;
+                  const completed = completedStepIdsRef.current.size;
+                  const stepFromPlan = planStepsRef.current?.find((s) => s.id === stepId);
+                  const title = parsed.title ?? stepFromPlan?.title;
+                  const result = typeof parsed.result === "string" ? parsed.result : "";
+                  const notes = parsed.notes;
+                  setHistorical((prev) => [
+                    ...prev,
+                    {
+                      id: `step-${stepId}-${Date.now()}-${Math.random()}`,
+                      role: "step-progress",
+                      text: result,
+                      stepProgress: {
+                        stepId,
+                        title,
+                        completed,
+                        total,
+                        notes,
+                      },
+                    },
+                  ]);
+                }
+              } catch {
+                /* malformed payload — skip the progress row */
               }
             }
           } else if (ev.role === "error") {

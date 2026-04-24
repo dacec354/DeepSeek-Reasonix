@@ -192,4 +192,135 @@ describe("registerPlanTool + submit_plan", () => {
     const out = await reg.dispatch("submit_plan", JSON.stringify({ plan: "\n\n  trimmed  \n" }));
     expect(JSON.parse(out).plan).toBe("trimmed");
   });
+
+  it("accepts an optional steps array and surfaces it in the tool result", async () => {
+    const reg = new ToolRegistry();
+    const submitted: Array<{ plan: string; steps?: unknown }> = [];
+    registerPlanTool(reg, {
+      onPlanSubmitted: (plan, steps) => submitted.push({ plan, steps }),
+    });
+    reg.setPlanMode(true);
+    const steps = [
+      { id: "step-1", title: "Refactor auth", action: "Extract tokens into a module." },
+      {
+        id: "step-2",
+        title: "Update tests",
+        action: "Rewrite auth.test.ts to use the new module.",
+      },
+    ];
+    const out = await reg.dispatch("submit_plan", JSON.stringify({ plan: "# Plan", steps }));
+    const parsed = JSON.parse(out);
+    expect(parsed.steps).toEqual(steps);
+    expect(submitted[0]?.steps).toEqual(steps);
+  });
+
+  it("drops malformed step entries and omits steps entirely when none remain", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    reg.setPlanMode(true);
+    const out = await reg.dispatch(
+      "submit_plan",
+      JSON.stringify({
+        plan: "# Plan",
+        steps: [
+          { id: "", title: "missing id", action: "a" },
+          { id: "x", title: "", action: "a" },
+          { id: "y", title: "t", action: "" },
+          "not-an-object",
+          null,
+        ],
+      }),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.steps).toBeUndefined();
+  });
+
+  it("keeps only the well-formed steps when the array is mixed", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    reg.setPlanMode(true);
+    const out = await reg.dispatch(
+      "submit_plan",
+      JSON.stringify({
+        plan: "# Plan",
+        steps: [
+          { id: "step-1", title: "good", action: "do thing" },
+          { id: "", title: "bad", action: "x" },
+          { id: "step-2", title: "also good", action: "do other thing" },
+        ],
+      }),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.steps).toEqual([
+      { id: "step-1", title: "good", action: "do thing" },
+      { id: "step-2", title: "also good", action: "do other thing" },
+    ]);
+  });
+});
+
+describe("registerPlanTool + mark_step_complete", () => {
+  it("registers mark_step_complete as readOnly (safe during plan mode)", () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    expect(reg.has("mark_step_complete")).toBe(true);
+    expect(reg.get("mark_step_complete")?.readOnly).toBe(true);
+  });
+
+  it("returns a step_completed payload and fires onStepCompleted", async () => {
+    const reg = new ToolRegistry();
+    const seen: unknown[] = [];
+    registerPlanTool(reg, { onStepCompleted: (u) => seen.push(u) });
+    const out = await reg.dispatch(
+      "mark_step_complete",
+      JSON.stringify({
+        stepId: "step-1",
+        title: "Refactor auth",
+        result: "Moved tokens into src/auth/tokens.ts.",
+        notes: "Had to rename one export.",
+      }),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).toEqual({
+      kind: "step_completed",
+      stepId: "step-1",
+      title: "Refactor auth",
+      result: "Moved tokens into src/auth/tokens.ts.",
+      notes: "Had to rename one export.",
+    });
+    expect(seen).toHaveLength(1);
+    expect((seen[0] as { stepId: string }).stepId).toBe("step-1");
+  });
+
+  it("omits optional fields when empty", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    const out = await reg.dispatch(
+      "mark_step_complete",
+      JSON.stringify({ stepId: "step-1", result: "done" }),
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.title).toBeUndefined();
+    expect(parsed.notes).toBeUndefined();
+    expect(parsed.result).toBe("done");
+  });
+
+  it("rejects an empty stepId", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    const out = await reg.dispatch(
+      "mark_step_complete",
+      JSON.stringify({ stepId: "  ", result: "done" }),
+    );
+    expect(JSON.parse(out).error).toMatch(/stepId is required/);
+  });
+
+  it("rejects an empty result with a pointer at what to write", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    const out = await reg.dispatch(
+      "mark_step_complete",
+      JSON.stringify({ stepId: "step-1", result: "   " }),
+    );
+    expect(JSON.parse(out).error).toMatch(/result is required/);
+  });
 });
