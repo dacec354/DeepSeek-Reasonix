@@ -195,7 +195,15 @@ export function parseCitationUrl(url: string): CitationParts | null {
 export function validateCitation(url: string, projectRoot: string): CitationStatus {
   const parts = parseCitationUrl(url);
   if (!parts || !parts.path) return { ok: false, reason: "empty path" };
-  const fullPath = isAbsolute(parts.path) ? parts.path : join(projectRoot, parts.path);
+  // Strip a leading `/` or `\\`. Models habitually write `/foo.ts`
+  // meaning "project-root relative" — Aider / Claude-Code convention —
+  // rather than POSIX root-absolute. A literal absolute path is still
+  // reachable as `C:\foo` on Windows or once the strip drops the slash
+  // and Node's `isAbsolute` correctly rejects what's left. Real unix
+  // absolute references like `/etc/hosts` in a code citation are vanishingly
+  // rare — if anyone needs one we can revisit.
+  const normalized = parts.path.replace(/^[/\\]+/, "");
+  const fullPath = isAbsolute(normalized) ? normalized : join(projectRoot, normalized);
   let stat: ReturnType<typeof statSync>;
   try {
     stat = statSync(fullPath);

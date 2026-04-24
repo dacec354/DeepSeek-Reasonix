@@ -504,6 +504,21 @@ describe("citation links — validateCitation + collectCitations", () => {
     if (!result.ok) expect(result.reason).toBe("file not found");
   });
 
+  it("leading `/` is treated as project-rooted, not filesystem-absolute", () => {
+    // Models habitually write `/foo.ts` meaning "project root" (Aider /
+    // Claude-Code style). Without the strip this would be resolved
+    // against POSIX `/` or the Windows drive root and always fail —
+    // that was the symptom in 0.5.16: a real file at the project root
+    // rendered as "file not found" because the leading slash sent the
+    // validator to the wrong place.
+    expect(validateCitation("/real.ts", tmp)).toEqual({ ok: true });
+    expect(validateCitation("/real.ts:2", tmp)).toEqual({ ok: true });
+  });
+
+  it("leading `\\` is treated the same way (Windows-style)", () => {
+    expect(validateCitation("\\real.ts", tmp)).toEqual({ ok: true });
+  });
+
   it("collectCitations validates every unique citation, skips externals", () => {
     const text = [
       "See [foo](real.ts:2) for details.",
