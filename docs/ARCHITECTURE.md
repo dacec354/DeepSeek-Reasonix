@@ -6,7 +6,11 @@ Reasonix is **opinionated, not general**. Every abstraction is justified by a
 DeepSeek-specific behavior or economic property. If it's generic, we don't
 ship it.
 
-## The three pillars
+The product north star: **coding agent that stays cheap enough to leave on**.
+A tool that quietly burns $200/month on a background project is one nobody
+uses. Every subsystem below is answerable to that goal.
+
+## The four pillars
 
 ### Pillar 1 — Cache-First Loop
 
@@ -37,49 +41,29 @@ timestamps each turn — cache hit rate in practice: <20%.
    into the log.
 
 **Metric.** `prompt_cache_hit_tokens / (hit + miss)` exposed per-turn and
-aggregated per-session. This is the user-visible proof of Pillar 1's value.
+aggregated per-session. Visible in the TUI's top-bar cache cell.
 
-### Pillar 2 — R1 Thought Harvesting *(v0.0.3, opt-in)*
+### Pillar 2 — R1 Thought Harvesting *(opt-in)*
 
-**Problem.** R1 emits extensive `reasoning_content`. DeepSeek's own docs
-recommend *not* feeding it back to the next turn. Most frameworks display it
-to the user and discard. The planning signal inside is lost.
+**Problem.** R1 / V4-thinking emits extensive `reasoning_content`. DeepSeek's
+own docs recommend *not* feeding it back to the next turn. Most frameworks
+display it to the user and discard. The planning signal inside is lost.
 
 **Solution.** A two-stage process:
 
 ```
-R1 output → Harvester (V3, cheap) → TypedPlanState
-                                     ├─ subgoals: string[]
-                                     ├─ hypotheses: string[]
-                                     ├─ uncertainties: string[]
-                                     └─ rejectedPaths: string[]
+R1 output → Harvester (v4-flash, thinking off) → TypedPlanState
+                                                  ├─ subgoals: string[]
+                                                  ├─ hypotheses: string[]
+                                                  ├─ uncertainties: string[]
+                                                  └─ rejectedPaths: string[]
 ```
 
-The harvester is a cheap V3 call with a strict JSON schema. Output is
-validated at runtime. The typed state is queryable by the orchestrator — e.g.
-"if `uncertainties.length > 2`, trigger branch sampling."
+The harvester is a cheap flash call with a strict JSON schema. Output is
+validated at runtime. **Not enabled in any preset** (see Pillar 4) — the
+additional round-trip rarely pays back, so it's `/harvest on` opt-in.
 
-### Branch-and-Select *(v0.0.5, opt-in, builds on Pillar 2)*
-
-**Why now.** DeepSeek is cheap enough that running N=3 R1 samples is still
-cheaper than a single Claude call. What was research luxury (self-consistency
-sampling) becomes a practical default.
-
-**How.** When `--branch N` (or `{ branch: N }` in code) is passed:
-
-1. The turn is forced non-streaming (N samples must complete before we can
-   compare).
-2. `runBranches` fires N `client.chat` calls in parallel, spreading
-   temperatures across `[0, 1]` to diversify reasoning paths.
-3. Each sample's `reasoning_content` is piped through Pillar 2's harvest.
-4. The default selector picks the sample with the fewest `uncertainties`;
-   ties are broken by shorter answer length (Occam).
-5. The loop emits a `branch_summary` alongside the winning `assistant_final`.
-
-**Cost.** 3× R1 on a hard math problem ≈ \$0.02 — still dominates Claude on
-cost/quality for agentic work.
-
-### Pillar 3 — Tool-Call Repair *(v0.0.1 ships complete)*
+### Pillar 3 — Tool-Call Repair
 
 **Problem.** Empirical DeepSeek failure modes:
 - Tool-call JSON emitted inside `<think>`, missing from the final message.
@@ -92,7 +76,6 @@ cost/quality for agentic work.
 1. **`flatten`** — schemas with >10 leaf params or depth >2 are auto-detected
    on `ToolRegistry.register()` and presented to the model in dot-notation
    form. `dispatch()` re-nests the args before calling the user's `fn`.
-   Opt out with `new ToolRegistry({ autoFlatten: false })`.
 2. **`scavenge`** — regex + JSON parser sweeps `reasoning_content` for any tool
    call the model forgot to emit in `tool_calls`.
 3. **`truncation`** — detect unbalanced JSON and repair by closing braces or
@@ -100,48 +83,169 @@ cost/quality for agentic work.
 4. **`storm`** — identical `(tool, args)` tuple within a sliding window →
    suppress the call, inject a reflection turn.
 
+### Pillar 4 — Cost Control *(v0.6)*
+
+**Problem.** Coding agents that default to the frontier model (v4-pro, ~12×
+flash cost) and accumulate full tool results in context are $150-$250/month
+for active users. Most turns don't need frontier reasoning; most sessions
+re-pay for tool results that were only useful once.
+
+**Solution.** Four complementary mechanisms, none of which require manual
+tuning in the common case:
+
+#### 4.1 Tiered defaults (flash-first)
+
+The three presets now trade only **model tier** and **reasoning effort**:
+
+| Preset | Model | Effort | Harvest | Branch | Cost |
+|---|---|---|---|---|---:|
+| `fast` | `v4-flash` | `high` | off | 1 | 1× |
+| `smart` (default) | `v4-flash` | `max` | off | 1 | ~1.5× |
+| `max` | `v4-pro` | `max` | off | 1 | ~12× |
+
+**Branching and harvest are never in a preset.** Both multiply cost and
+rarely pay back; `/branch N` and `/harvest on` are pure opt-ins. A user can
+run for weeks without ever touching them.
+
+All auxiliary calls — `forceSummaryAfterIterLimit`, subagent spawns,
+truncation repair retries — hard-code `v4-flash + effort=high` regardless
+of the user's preset. There's no reason to pay pro rates for "paraphrase
+these tool results into prose" or for an `explore` subagent's grep chain.
+
+#### 4.2 Turn-end auto-compaction
+
+Every tool result in the log exceeding `TURN_END_RESULT_CAP_TOKENS` (3000)
+is shrunk to that cap when a turn ends. The model had the full text for
+the turn that read it; subsequent turns see a compact summary and can
+re-read if needed. One extra `read_file` call is vastly cheaper than
+dragging 12KB through every future prompt.
+
+A proactive 40% context-ratio threshold runs the same shrink pre-emptively
+inside long multi-iter turns before the 80% emergency threshold fires.
+
+#### 4.3 `/pro` single-turn arming
+
+Users who predict a hard task type `/pro`; the **next** turn runs on
+`v4-pro`, then auto-disarms. No preset churn, no forgotten revert. Armed
+state is visible as a yellow `⇧ pro armed` pill in the header.
+
+#### 4.4 Failure-signal auto-escalation
+
+The loop counts visible "flash is struggling" events per turn:
+- `edit_file` / `write_file` SEARCH-not-found errors
+- ToolCallRepair fires (scavenge / truncation-fix / storm-break)
+
+Once the count hits `FAILURE_ESCALATION_THRESHOLD` (3), the **remainder of
+the current turn** runs on `v4-pro`. Announced via a yellow warning row —
+no silent cost surprises. Counter + escalation flag reset at every turn
+start.
+
+Header shows a red `⇧ pro escalated` pill while the turn is on pro.
+
+#### Cost transparency
+
+Per-turn and session cost are colored in the StatsPanel:
+- `turn $0.003` — green <$0.05, yellow $0.05–0.20, red ≥$0.20
+- `session $0.12` — same scale ×10
+
 ## Module layout
 
 ```
 src/
-├── client.ts          # httpx-equivalent DeepSeek client (fetch + SSE)
-├── loop.ts            # Pillar 1: Cache-First Loop (async iterator)
-├── harvest.ts         # Pillar 2 stub (v0.0.1 surface only)
-├── repair/
-│   ├── index.ts       # Pillar 3 pipeline
+├── client.ts               # DeepSeek client (fetch + SSE)
+├── loop.ts                 # Pillar 1 + 4 — CacheFirstLoop
+├── harvest.ts              # Pillar 2 — flash-backed plan-state extraction
+├── repair/                 # Pillar 3 pipeline
+│   ├── index.ts
 │   ├── scavenge.ts
 │   ├── flatten.ts
 │   ├── truncation.ts
 │   └── storm.ts
-├── tools.ts           # Tool registry + dispatch
-├── memory.ts          # Prefix / Log / Scratch primitives
-├── telemetry.ts       # Cost & cache-hit accounting
-├── types.ts           # Shared type definitions
-├── index.ts           # Library barrel export
+├── prompt-fragments.ts     # TUI_FORMATTING_RULES, NEGATIVE_CLAIM_RULE —
+│                           #   reused by main + subagent + skill prompts
+├── code/prompt.ts          # reasonix code main system prompt
+├── tools/                  # Tool implementations
+│   ├── filesystem.ts       # read / list / search / edit / write
+│   ├── shell.ts            # run_command + run_background (JobRegistry)
+│   ├── jobs.ts             # background-process registry
+│   ├── memory.ts           # remember / forget / list user memories
+│   ├── skills.ts           # list + invoke SKILL.md playbooks
+│   ├── subagent.ts         # spawn_subagent — flash+high by default
+│   ├── plan.ts             # submit_plan (review gate)
+│   └── web.ts              # web_search, web_fetch
+├── mcp/                    # MCP client + bridge (stdio + SSE)
+├── memory.ts               # ImmutablePrefix / AppendOnlyLog / VolatileScratch
+├── project-memory.ts       # REASONIX.md loader
+├── user-memory.ts          # ~/.reasonix/memory/ store (project + global)
+├── skills.ts               # built-in explore + research skills
+├── session.ts              # JSONL session persistence
+├── telemetry.ts            # cost + cache-hit accounting + SessionSummary
+├── tokenizer.ts            # DeepSeek V3 tokenizer (ported)
+├── usage.ts                # ~/.reasonix/usage.jsonl roll-up
+├── types.ts                # ChatMessage, ToolCall, ToolSpec
+├── index.ts                # library barrel
 └── cli/
-    ├── index.ts       # commander entry
-    ├── commands/      # chat, run, stats, version
-    └── ui/            # Ink React components (App, StatsPanel, EventLog, PromptInput)
+    ├── index.ts            # commander entry
+    ├── resolve.ts          # config + CLI flag precedence
+    ├── commands/           # chat, code, run, stats, sessions, ...
+    └── ui/
+        ├── App.tsx                  # root Ink component (~1984 LOC, was 2931)
+        ├── LiveRows.tsx             # spinner rows (OngoingTool / Status / ...)
+        ├── EventLog.tsx             # Historical row rendering
+        ├── StatsPanel.tsx           # top bar + cost badges
+        ├── PromptInput.tsx          # cursor-aware multi-line input
+        ├── PlanConfirm.tsx          # submit_plan review modal
+        ├── ShellConfirm.tsx         # run_command approval modal
+        ├── EditConfirm.tsx          # per-edit review modal
+        ├── markdown.tsx             # Ink-native markdown renderer
+        ├── edit-history.ts          # EditHistoryEntry + formatters
+        ├── useEditHistory.ts        # /undo, /history, /show state machine
+        ├── useCompletionPickers.ts  # slash, @, slash-arg pickers
+        ├── useSessionInfo.ts        # balance + models + updates fetch
+        ├── useSubagent.ts           # subagent sink wiring
+        └── slash/                   # /-command implementation
+            ├── types.ts             # SlashContext, SlashResult, ...
+            ├── commands.ts          # SLASH_COMMANDS data + parse + suggest
+            ├── helpers.ts           # git, memory, token formatters
+            ├── dispatch.ts          # registry + handleSlash lookup
+            └── handlers/            # per-topic: basic, mcp, memory,
+                                     # skill, admin, observability, edits,
+                                     # jobs, sessions, model (/pro lives here)
 ```
 
-## Roadmap
+Files kept small by design: the largest module under `cli/ui/` is 2K
+lines (App.tsx), every handler under `slash/handlers/` is ≤200 lines,
+every hook under `cli/ui/` is ≤310 lines. Adding a new slash command
+means editing one handler file and one registry line.
 
-- **v0.0.1** — Pillar 1 end-to-end, Pillar 3 complete, Ink TUI, τ-bench scaffold.
-- **v0.0.2** — First-run key prompt, saved to `~/.reasonix/config.json`.
-- **v0.0.3** — Pillar 2 MVP (opt-in harvest), retry layer, TextInput fix.
-- **v0.0.4** — Schema flatten auto-applied in ToolRegistry (closes Pillar 3).
-- **v0.0.5** — Self-consistency branching (`--branch N`) driven by Pillar 2
-  plan-state uncertainty count.
-- **v0.0.6** — Named session persistence (`--session <name>`), JSONL log
-  stored under `~/.reasonix/sessions/`, restored into the append-only log
-  on resume.
+## Design evolution
+
+- **v0.0.x** — Pillar 1 end-to-end, Pillar 3 complete, Ink TUI scaffold.
 - **v0.1** — τ-bench numbers published, streaming polish, transcript replay.
 - **v0.2** — Self-consistency / branch-budget sampling driven by plan state.
-- **v0.3** — MCP client, session persistence.
+- **v0.3** — MCP client (stdio + SSE), session persistence.
+- **v0.4.x** — `reasonix code` with SEARCH/REPLACE edits, review/auto
+  gate, background jobs, hooks.
+- **v0.5.x** — V4 model support, skills, memory, subagents, actionable
+  error messages.
+- **v0.6** *(current)* —
+  - **Pillar 4 cost control** (flash-first defaults, auto-compaction,
+    `/pro` one-shot, failure-triggered escalation, cost badges).
+  - `deepseek-chat` / `deepseek-reasoner` scheduled for deprecation —
+    all user-facing surfaces updated to `v4-flash` / `v4-pro`.
+  - `branch` + `harvest` removed from every preset; manual opt-in only.
+  - Shared prompt fragments (`TUI_FORMATTING_RULES`, `NEGATIVE_CLAIM_RULE`).
+  - UI refactor: App.tsx split into 6 hooks/components, slash.ts split
+    into 13 per-topic modules.
 
 ## Explicit non-goals
 
-- Multi-agent orchestration.
+- Multi-agent orchestration as a first-class concept (subagents are a
+  cost-reduction mechanism, not a coordination primitive).
 - RAG / vector retrieval.
-- Support for non-DeepSeek backends.
+- Support for non-DeepSeek backends (an OpenAI-compatible shim would
+  work today via `--model` override, but is not tested).
 - Web UI / SaaS.
+- Automatic cost escalation without user-visible announcement. Every
+  pro-tier model call is surfaced; silent escalation was considered
+  and rejected.
