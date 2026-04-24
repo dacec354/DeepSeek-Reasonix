@@ -125,6 +125,30 @@ export function renderDashboard(agg: UsageAggregate, logPath: string): string {
   if (agg.firstSeen) {
     lines.push(`tracked since:     ${new Date(agg.firstSeen).toISOString().slice(0, 10)}`);
   }
+  if (agg.subagents) {
+    lines.push("");
+    lines.push(renderSubagentSection(agg.subagents));
+  }
+  return lines.join("\n");
+}
+
+function renderSubagentSection(sub: NonNullable<UsageAggregate["subagents"]>): string {
+  const lines: string[] = [];
+  const seconds = (sub.totalDurationMs / 1000).toFixed(1);
+  lines.push(
+    `subagent activity: ${sub.total} run(s) · $${sub.costUsd.toFixed(6)} · ${seconds}s total`,
+  );
+  // Show at most 5 skills so the section never dwarfs the main table.
+  const top = sub.bySkill.slice(0, 5);
+  for (const s of top) {
+    const sec = (s.durationMs / 1000).toFixed(1);
+    lines.push(
+      `  ${pad(s.skillName, 18)} ${pad(`${s.count}`, 4, "right")}  $${s.costUsd.toFixed(6)}  ${sec}s`,
+    );
+  }
+  if (sub.bySkill.length > top.length) {
+    lines.push(`  (+${sub.bySkill.length - top.length} more)`);
+  }
   return lines.join("\n");
 }
 

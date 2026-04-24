@@ -2,6 +2,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DeepSeekClient } from "../src/client.js";
+import { CacheFirstLoop } from "../src/loop.js";
+import { ImmutablePrefix } from "../src/memory.js";
 import {
   appendSessionMessage,
   deleteSession,
@@ -102,5 +105,23 @@ describe("session persistence", () => {
     appendSessionMessage("s", { role: "user", content: "x" });
     expect(existsSync(sessionsDir())).toBe(true);
     expect(existsSync(dirname(sessionPath("s")))).toBe(true);
+  });
+
+  it("loop.appendAndPersist writes bang-style messages to the session file", () => {
+    // Regression: before 0.5.14 the bang handler called loop.log.append which
+    // only touched memory, so `!cmd` output was lost on session resume.
+    const client = new DeepSeekClient({
+      apiKey: "sk-test",
+      fetch: (async () => new Response()) as any,
+    });
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s" }),
+      stream: false,
+      session: "bang-persist",
+    });
+    loop.appendAndPersist({ role: "user", content: "[!ls]\n$ ls\n[exit 0]\nfile1 file2" });
+    const reloaded = loadSessionMessages("bang-persist");
+    expect(reloaded).toEqual([{ role: "user", content: "[!ls]\n$ ls\n[exit 0]\nfile1 file2" }]);
   });
 });

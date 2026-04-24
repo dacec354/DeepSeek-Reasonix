@@ -52,6 +52,22 @@ export interface UsageRecord {
   costUsd: number;
   /** What the same turn would have cost at Claude Sonnet 4.6 rates. */
   claudeEquivUsd: number;
+  /**
+   * Distinguishes ordinary parent-loop turns from subagent summary rows.
+   * Absent on pre-0.5.14 records — treat as "turn" when missing.
+   */
+  kind?: "turn" | "subagent";
+  /** Present when `kind === "subagent"`. Attribution metadata for the /stats roll-up. */
+  subagent?: {
+    /** Skill that spawned it, when the spawn came from a `runAs: subagent` skill. */
+    skillName?: string;
+    /** First ~60 chars of the task prompt — enough context to recognize a run, never the full text. */
+    taskPreview: string;
+    /** Tool calls the child loop dispatched before returning. */
+    toolIters: number;
+    /** Wall-clock ms. */
+    durationMs: number;
+  };
 }
 
 /** Where the log lives. Tests override via `opts.path`. */
@@ -67,6 +83,9 @@ export interface AppendUsageInput {
   now?: number;
   /** Override the log path (tests). */
   path?: string;
+  /** When appending a subagent summary row, set `kind: "subagent"` and populate `subagent`. */
+  kind?: "turn" | "subagent";
+  subagent?: UsageRecord["subagent"];
 }
 
 /**
@@ -89,6 +108,8 @@ export function appendUsage(input: AppendUsageInput): UsageRecord {
     costUsd: costUsd(input.model, input.usage),
     claudeEquivUsd: claudeEquivalentCost(input.usage),
   };
+  if (input.kind === "subagent") record.kind = "subagent";
+  if (input.subagent) record.subagent = input.subagent;
 
   const path = input.path ?? defaultUsageLogPath();
   try {
@@ -206,6 +227,21 @@ export interface UsageAggregate {
   firstSeen: number | null;
   /** Latest record's ts, or `null` when the log is empty. */
   lastSeen: number | null;
+  /**
+   * Subagent-specific rollup. Undefined when no subagent records exist
+   * in the log so consumers can cheaply skip the section. Counts reflect
+   * subagent SPAWNS (not internal child-loop turns) — one row per run.
+   */
+  subagents?: SubagentAggregate;
+}
+
+/** Rolled-up view of all `kind: "subagent"` records. */
+export interface SubagentAggregate {
+  total: number;
+  costUsd: number;
+  totalDurationMs: number;
+  /** Per-skill breakdown. Records without `skillName` (raw spawn_subagent calls) group under `"(adhoc)"`. */
+  bySkill: Array<{ skillName: string; count: number; costUsd: number; durationMs: number }>;
 }
 
 /**
@@ -232,6 +268,10 @@ export function aggregateUsage(
   const sessionCounts = new Map<string, number>();
   let firstSeen: number | null = null;
   let lastSeen: number | null = null;
+  const skillCounts = new Map<string, { count: number; costUsd: number; durationMs: number }>();
+  let subagentTotal = 0;
+  let subagentCost = 0;
+  let subagentDuration = 0;
 
   for (const r of records) {
     addToBucket(all, r);
@@ -245,6 +285,19 @@ export function aggregateUsage(
 
     if (firstSeen === null || r.ts < firstSeen) firstSeen = r.ts;
     if (lastSeen === null || r.ts > lastSeen) lastSeen = r.ts;
+
+    if (r.kind === "subagent") {
+      subagentTotal += 1;
+      subagentCost += r.costUsd;
+      const dur = r.subagent?.durationMs ?? 0;
+      subagentDuration += dur;
+      const key = r.subagent?.skillName?.trim() || "(adhoc)";
+      const prev = skillCounts.get(key) ?? { count: 0, costUsd: 0, durationMs: 0 };
+      prev.count += 1;
+      prev.costUsd += r.costUsd;
+      prev.durationMs += dur;
+      skillCounts.set(key, prev);
+    }
   }
 
   const byModel = Array.from(modelCounts.entries())
@@ -254,12 +307,25 @@ export function aggregateUsage(
     .map(([session, turns]) => ({ session, turns }))
     .sort((a, b) => b.turns - a.turns);
 
+  const subagents: SubagentAggregate | undefined =
+    subagentTotal > 0
+      ? {
+          total: subagentTotal,
+          costUsd: subagentCost,
+          totalDurationMs: subagentDuration,
+          bySkill: Array.from(skillCounts.entries())
+            .map(([skillName, v]) => ({ skillName, ...v }))
+            .sort((a, b) => b.count - a.count),
+        }
+      : undefined;
+
   return {
     buckets: [today, week, month, all],
     byModel,
     bySession,
     firstSeen,
     lastSeen,
+    subagents,
   };
 }
 

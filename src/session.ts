@@ -107,6 +107,15 @@ export function deleteSession(name: string): boolean {
   const path = sessionPath(name);
   try {
     unlinkSync(path);
+    // Best-effort cleanup of side-car files that belong to this session
+    // so `/forget` doesn't leave orphans in `sessionsDir()`. Currently
+    // just the pending-edits checkpoint (src/code/pending-edits.ts).
+    const sidecar = path.replace(/\.jsonl$/, ".pending.json");
+    try {
+      unlinkSync(sidecar);
+    } catch {
+      /* no sidecar present — expected for sessions without pending edits */
+    }
     return true;
   } catch {
     return false;

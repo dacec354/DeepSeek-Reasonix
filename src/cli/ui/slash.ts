@@ -7,6 +7,7 @@ import {
   projectSettingsPath,
 } from "../../hooks.js";
 import type { CacheFirstLoop } from "../../loop.js";
+import type { McpClient } from "../../mcp/client.js";
 import type { InspectionReport } from "../../mcp/inspect.js";
 import { PROJECT_MEMORY_FILE, memoryEnabled, readProjectMemory } from "../../project-memory.js";
 import { deleteSession, listSessions } from "../../session.js";
@@ -168,6 +169,13 @@ export interface McpServerSummary {
   toolCount: number;
   /** Full inspection snapshot — used for the resources + prompts sections. */
   report: InspectionReport;
+  /**
+   * Live MCP client, kept so `/resource` and `/prompt` can call
+   * `readResource` / `getPrompt` against this server. Omitted by
+   * callers that only build the summary for display; those slashes
+   * fall back to "not available" when the client is missing.
+   */
+  client?: McpClient;
 }
 
 /**
@@ -190,10 +198,12 @@ export interface SlashCommandSpec {
    * How the first argument position should autocomplete. Shapes the
    * picker that appears below the prompt once the user types `/<cmd>`
    * + space:
-   *   - `"models"`  → DeepSeek model-id list fetched at startup.
-   *   - `string[]`  → small enum of literal values (e.g. `["on", "off"]`).
-   *   - omitted     → no picker; a persistent usage hint shows the
-   *                    argsHint + summary so the user knows what to type.
+   *   - `"models"`         → DeepSeek model-id list fetched at startup.
+   *   - `"mcp-resources"`  → live URIs aggregated across connected MCP servers.
+   *   - `"mcp-prompts"`    → live prompt names aggregated across MCP servers.
+   *   - `string[]`         → small enum of literal values (e.g. `["on", "off"]`).
+   *   - omitted            → no picker; a persistent usage hint shows the
+   *                          argsHint + summary so the user knows what to type.
    *
    * File-path completion is deliberately NOT offered here. Users who
    * want to reference a file in a prompt use `@path/to/file` (0.5.5);
@@ -201,7 +211,7 @@ export interface SlashCommandSpec {
    * ranking. Adding a second file-picker surface for slash commands
    * would split the UX without adding leverage.
    */
-  argCompleter?: "models" | readonly string[];
+  argCompleter?: "models" | "mcp-resources" | "mcp-prompts" | readonly string[];
 }
 
 export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
@@ -233,6 +243,18 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     argCompleter: ["off", "2", "3", "4", "5"],
   },
   { cmd: "mcp", summary: "list MCP servers + tools attached to this session" },
+  {
+    cmd: "resource",
+    argsHint: "[uri]",
+    summary: "browse + read MCP resources (no arg → list URIs; <uri> → fetch contents)",
+    argCompleter: "mcp-resources",
+  },
+  {
+    cmd: "prompt",
+    argsHint: "[name]",
+    summary: "browse + fetch MCP prompts (no arg → list names; <name> → render prompt)",
+    argCompleter: "mcp-prompts",
+  },
   { cmd: "tool", argsHint: "[N]", summary: "dump full output of the Nth tool call (1=latest)" },
   {
     cmd: "memory",
@@ -442,6 +464,11 @@ export function handleSlash(
           "  Tab                    insert the highlighted item without submitting",
           "  Enter                  insert and (slash) run it, (@) keep editing",
           "",
+          "MCP exploration:",
+          "  /mcp                   servers + tool/resource/prompt counts",
+          "  /resource [uri]        browse & read resources exposed by your MCP servers",
+          "  /prompt [name]         browse & fetch prompts exposed by your MCP servers",
+          "",
           "Useful slashes: /help · /context · /stats · /compact · /new · /exit",
         ].join("\n"),
       };
@@ -459,6 +486,8 @@ export function handleSlash(
           "  /harvest [on|off]        Pillar 2: structured plan-state extraction",
           "  /branch <N|off>          run N parallel samples (N>=2), pick most confident",
           "  /mcp                     list MCP servers + tools attached to this session",
+          "  /resource [uri]          browse + read MCP resources (no arg → list URIs; <uri> → fetch)",
+          "  /prompt [name]           browse + fetch MCP prompts (no arg → list names; <name> → render)",
           "  /setup                   (exit + reconfigure) → run `reasonix setup`",
           "  /compact [tokens]        shrink large tool results in history (default 4000 tokens/result)",
           "  /think                   dump the most recent turn's full R1 reasoning (reasoner only)",
@@ -516,6 +545,8 @@ export function handleSlash(
       // server with its tools / resources / prompts grouped together.
       if (servers.length > 0) {
         const lines: string[] = [];
+        let anyResources = false;
+        let anyPrompts = false;
         for (const s of servers) {
           const { report } = s;
           const serverName = report.serverInfo.name || "(unknown)";
@@ -524,11 +555,20 @@ export function handleSlash(
           lines.push(`  tools     ${s.toolCount}`);
           appendSection(lines, "resources", report.resources);
           appendSection(lines, "prompts  ", report.prompts);
+          if (report.resources.supported && report.resources.items.length > 0) anyResources = true;
+          if (report.prompts.supported && report.prompts.items.length > 0) anyPrompts = true;
           lines.push("");
         }
-        lines.push(
-          "Chat mode consumes tools today; resources+prompts are surfaced here for awareness.",
-        );
+        if (anyResources || anyPrompts) {
+          const hints: string[] = [];
+          if (anyResources) hints.push("`/resource` to browse+read");
+          if (anyPrompts) hints.push("`/prompt` to browse+fetch");
+          lines.push(hints.join(" · "));
+        } else {
+          lines.push(
+            "Chat mode consumes tools today; resources+prompts are surfaced here for awareness.",
+          );
+        }
         lines.push(
           "Full catalog: `reasonix mcp list` · deeper diagnosis: `reasonix mcp inspect <spec>`.",
         );

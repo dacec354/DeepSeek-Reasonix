@@ -211,6 +211,7 @@ export async function chatCommand(opts: ChatOptions): Promise<void> {
           spec: raw,
           toolCount: bridge.registeredNames.length,
           report,
+          client: mcp,
         });
       } catch (err) {
         // Per-server failure is non-fatal: one broken server shouldn't

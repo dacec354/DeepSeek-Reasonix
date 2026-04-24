@@ -18,6 +18,7 @@ import {
   restoreSnapshots,
   snapshotBeforeEdits,
 } from "../../code/edit-blocks.js";
+import { clearPendingEdits, loadPendingEdits, savePendingEdits } from "../../code/pending-edits.js";
 import { addProjectShellAllowed } from "../../config.js";
 import { type ResolvedHook, formatHookOutcomeMessage, loadHooks, runHooks } from "../../hooks.js";
 import { CacheFirstLoop, DeepSeekClient, ImmutablePrefix } from "../../index.js";
@@ -45,6 +46,7 @@ import { SlashArgPicker } from "./SlashArgPicker.js";
 import { SlashSuggestions } from "./SlashSuggestions.js";
 import { StatsPanel } from "./StatsPanel.js";
 import { detectBangCommand, formatBangUserMessage } from "./bang.js";
+import { handleMcpBrowseSlash } from "./mcp-browse.js";
 import { formatLongPaste } from "./paste-collapse.js";
 import {
   type McpServerSummary,
@@ -410,8 +412,33 @@ export function App({
       if (!partial) return all.slice(0, 40);
       return all.filter((m) => m.toLowerCase().includes(needle)).slice(0, 40);
     }
+    if (completer === "mcp-resources") {
+      // Aggregate URIs across every server's cached inspection. Prefix
+      // with the server label when >1 server so users can tell them
+      // apart — the read handler strips the prefix before calling.
+      const uris: string[] = [];
+      const servers = mcpServers ?? [];
+      for (const s of servers) {
+        if (!s.report.resources.supported) continue;
+        for (const r of s.report.resources.items) uris.push(r.uri);
+      }
+      if (partial && uris.some((u) => u.toLowerCase() === needle)) return null;
+      if (!partial) return uris.slice(0, 40);
+      return uris.filter((u) => u.toLowerCase().includes(needle)).slice(0, 40);
+    }
+    if (completer === "mcp-prompts") {
+      const names: string[] = [];
+      const servers = mcpServers ?? [];
+      for (const s of servers) {
+        if (!s.report.prompts.supported) continue;
+        for (const p of s.report.prompts.items) names.push(p.name);
+      }
+      if (partial && names.some((n) => n.toLowerCase() === needle)) return null;
+      if (!partial) return names.slice(0, 40);
+      return names.filter((n) => n.toLowerCase().includes(needle)).slice(0, 40);
+    }
     return null;
-  }, [slashArgContext, models]);
+  }, [slashArgContext, models, mcpServers]);
   useEffect(() => {
     setSlashArgSelected((prev) => {
       if (!slashArgMatches || slashArgMatches.length === 0) return 0;
@@ -471,6 +498,9 @@ export function App({
             // else falls through to spawnSubagent's default.
             model: skill.model,
             sink: subagentSinkRef.current,
+            // Stamped onto every event so the TUI sink + usage log can
+            // attribute the run to a skill without extra bookkeeping.
+            skillName: skill.name,
           });
           return formatSubagentResult(result);
         },
@@ -596,9 +626,13 @@ export function App({
       // end
       setSubagentActivity(null);
       const seconds = ((ev.elapsedMs ?? 0) / 1000).toFixed(1);
+      // Inline cost: the one number most users look at. Shown in the
+      // Historical row so they don't have to run `/stats` to see it.
+      const costTail =
+        ev.costUsd !== undefined && ev.costUsd > 0 ? ` · $${ev.costUsd.toFixed(4)}` : "";
       const summary = ev.error
         ? `⌬ subagent "${ev.task}" failed after ${seconds}s · ${ev.iter ?? 0} tool call(s) — ${ev.error}`
-        : `⌬ subagent "${ev.task}" done in ${seconds}s · ${ev.iter ?? 0} tool call(s) · ${ev.turns ?? 0} turn(s)`;
+        : `⌬ subagent "${ev.task}" done in ${seconds}s · ${ev.iter ?? 0} tool call(s) · ${ev.turns ?? 0} turn(s)${costTail}`;
       setHistorical((prev) => [
         ...prev,
         {
@@ -607,11 +641,28 @@ export function App({
           text: summary,
         },
       ]);
+      // Persist a subagent summary row to ~/.reasonix/usage.jsonl so
+      // `/stats` and `reasonix stats` surface it. Skipped on error — we
+      // only record what actually cost money and did work.
+      if (!ev.error && ev.usage && ev.model) {
+        appendUsage({
+          session: session ?? null,
+          model: ev.model,
+          usage: ev.usage,
+          kind: "subagent",
+          subagent: {
+            skillName: ev.skillName,
+            taskPreview: ev.task.slice(0, 60),
+            toolIters: ev.iter ?? 0,
+            durationMs: ev.elapsedMs ?? 0,
+          },
+        });
+      }
     };
     return () => {
       subagentSinkRef.current.current = null;
     };
-  }, []);
+  }, [session]);
 
   // Surface a one-time banner about session state on first mount.
   const sessionBannerShown = useRef(false);
@@ -646,7 +697,25 @@ export function App({
         },
       ]);
     }
-  }, [session, loop]);
+    // Restore any pending edit queue from a prior run that was
+    // interrupted before /apply or /discard. The checkpoint file sits
+    // next to the session log; if present, we re-populate pendingEdits
+    // and post an info row so the user knows what's waiting.
+    if (session && codeMode) {
+      const restored = loadPendingEdits(session);
+      if (restored && restored.length > 0) {
+        pendingEdits.current = restored;
+        setHistorical((prev) => [
+          ...prev,
+          {
+            id: `sys-pending-${Date.now()}`,
+            role: "info",
+            text: `▸ restored ${restored.length} pending edit block(s) from an interrupted prior run — /apply to commit or /discard to drop.`,
+          },
+        ]);
+      }
+    }
+  }, [session, loop, codeMode]);
 
   // Esc during busy → forward to the loop as an abort signal. The loop
   // finishes the tool call in flight (we can't kill subprocess stdio
@@ -790,8 +859,9 @@ export function App({
     const anyApplied = results.some((r) => r.status === "applied" || r.status === "created");
     if (anyApplied) lastEditSnapshots.current = snaps;
     pendingEdits.current = [];
+    clearPendingEdits(session ?? null);
     return formatEditResults(results);
-  }, [codeMode]);
+  }, [codeMode, session]);
 
   /**
    * /discard callback — forget the pending edits without touching
@@ -802,8 +872,9 @@ export function App({
     const count = pendingEdits.current.length;
     if (count === 0) return "nothing pending to discard.";
     pendingEdits.current = [];
+    clearPendingEdits(session ?? null);
     return `▸ discarded ${count} pending edit block(s). Nothing was written to disk.`;
-  }, []);
+  }, [session]);
 
   const prefixHash = loop.prefix.fingerprint;
 
@@ -902,16 +973,8 @@ export function App({
       // Bash mode — `!cmd` runs a shell command in the sandbox root
       // immediately (no allowlist gate: user-typed = explicit consent),
       // surfaces the formatted output in the Historical log, and
-      // appends a user-role message to the loop's in-memory log so the
-      // next model turn sees what happened. Claude-Code-style `!` UX.
-      //
-      // Session-file durability is intentionally NOT wired here:
-      // `loop.log.append` updates memory only, so on resume the bang
-      // output is gone. The next actual step()'s appendAndPersist
-      // captures the next user turn, and the model sees this bang
-      // output live within the same session either way. Treating bang
-      // as ephemeral keeps the fast-path fast; durable-capture could
-      // land in a later release.
+      // persists a user-role message so the next model turn sees what
+      // happened AND the bang exchange survives session resume.
       const bangCmd = detectBangCommand(text);
       if (bangCmd !== null) {
         const bangRoot = codeMode?.rootDir ?? process.cwd();
@@ -937,7 +1000,7 @@ export function App({
             ...prev,
             { id: `bang-o-${Date.now()}`, role: "info", text: formatted },
           ]);
-          loop.log.append({
+          loop.appendAndPersist({
             role: "user",
             content: formatBangUserMessage(bangCmd, formatted),
           });
@@ -953,6 +1016,24 @@ export function App({
         } finally {
           setBusy(false);
         }
+        return;
+      }
+
+      // MCP resource / prompt browsers — async calls that don't fit the
+      // synchronous handleSlash shape, so we intercept the exact command
+      // forms here. The slash-command registry still lists them (for
+      // /help + argument-level picker completion), but this branch is
+      // what actually runs the read/fetch.
+      const mcpBrowseMatch = /^\/(resource|prompt)(?:\s+([\s\S]*))?$/.exec(text);
+      if (mcpBrowseMatch) {
+        const kind = mcpBrowseMatch[1] as "resource" | "prompt";
+        const arg = mcpBrowseMatch[2]?.trim() ?? "";
+        promptHistory.current.push(text);
+        setHistorical((prev) => [
+          ...prev,
+          { id: `mcp-u-${Date.now()}`, role: "user", text, leadSeparator: prev.length > 0 },
+        ]);
+        await handleMcpBrowseSlash(kind, arg, mcpServers ?? [], setHistorical);
         return;
       }
 
@@ -1008,10 +1089,21 @@ export function App({
               text: result.info,
             },
           ]);
+          // /new wipes conversation; any pending edits from the prior
+          // assistant turn are stale (the user no longer sees the
+          // preview). Drop them so a later /apply doesn't surprise.
+          if (codeMode) {
+            pendingEdits.current = [];
+            clearPendingEdits(session ?? null);
+          }
           return;
         }
         if (result.clear) {
           setHistorical([]);
+          if (codeMode) {
+            pendingEdits.current = [];
+            clearPendingEdits(session ?? null);
+          }
           return;
         }
         if (result.info) {
@@ -1248,6 +1340,11 @@ export function App({
               const blocks = parseEditBlocks(finalText);
               if (blocks.length > 0) {
                 pendingEdits.current = blocks;
+                // Checkpoint the queue so a crash / Ctrl+C between
+                // "blocks parsed" and "user /apply" doesn't lose the
+                // edits. On next launch App.tsx's restore effect reads
+                // this file. /apply + /discard clear it explicitly.
+                savePendingEdits(session ?? null, blocks);
                 setHistorical((prev) => [
                   ...prev,
                   {

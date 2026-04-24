@@ -344,7 +344,7 @@ export class CacheFirstLoop {
     return { healedCount, tokensSaved, charsSaved };
   }
 
-  private appendAndPersist(message: ChatMessage): void {
+  appendAndPersist(message: ChatMessage): void {
     this.log.append(message);
     if (this.sessionName) {
       try {

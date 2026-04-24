@@ -41,7 +41,7 @@
  *     Cancellation still works via the AbortSignal.
  */
 
-import type { DeepSeekClient } from "../client.js";
+import { type DeepSeekClient, Usage } from "../client.js";
 import { CacheFirstLoop } from "../loop.js";
 import { ImmutablePrefix } from "../memory.js";
 import { applyProjectMemory } from "../project-memory.js";
@@ -58,6 +58,10 @@ export interface SubagentEvent {
   kind: "start" | "progress" | "end";
   /** First ~30 chars of the task prompt — used for the TUI status row. */
   task: string;
+  /** Skill that spawned this subagent, when applicable. Stamped on every event so the TUI/logger can attribute without extra plumbing. */
+  skillName?: string;
+  /** Model id the child loop ran on. Stamped alongside skillName. */
+  model?: string;
   /** Iteration count inside the child loop (number of tool results so far). */
   iter?: number;
   /** Wall-clock ms since the subagent started. */
@@ -68,6 +72,10 @@ export interface SubagentEvent {
   error?: string;
   /** Total turns the subagent took. Set on `end`. */
   turns?: number;
+  /** Total USD spent inside the child loop. Set on `end`. */
+  costUsd?: number;
+  /** Aggregated child-loop Usage (sum across turns). Set on `end`. */
+  usage?: Usage;
 }
 
 /**
@@ -119,6 +127,12 @@ export interface SpawnSubagentOptions {
    * that don't care about cancellation.
    */
   parentSignal?: AbortSignal;
+  /**
+   * Skill name when this spawn is driven by a `runAs: subagent` skill.
+   * Used purely for downstream attribution (TUI summary line, usage log).
+   * Omit for raw `spawn_subagent` tool calls.
+   */
+  skillName?: string;
 }
 
 /**
@@ -140,6 +154,12 @@ export interface SubagentResult {
   elapsedMs: number;
   /** USD spent in the child loop, summed across its turns. */
   costUsd: number;
+  /** Model id the child loop ran on. */
+  model: string;
+  /** Skill name if the spawn was driven by a `runAs: subagent` skill. */
+  skillName?: string;
+  /** Aggregated Usage across the child loop's turns. Zero-filled when no API calls landed. */
+  usage: Usage;
 }
 
 export interface SubagentToolOptions {
@@ -207,12 +227,15 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   const maxToolIters = opts.maxToolIters ?? DEFAULT_MAX_ITERS;
   const maxResultChars = opts.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
   const sink = opts.sink;
+  const skillName = opts.skillName;
 
   const startedAt = Date.now();
   const taskPreview = opts.task.length > 30 ? `${opts.task.slice(0, 30)}…` : opts.task;
   sink?.current?.({
     kind: "start",
     task: taskPreview,
+    skillName,
+    model,
     iter: 0,
     elapsedMs: 0,
   });
@@ -245,6 +268,8 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
         sink?.current?.({
           kind: "progress",
           task: taskPreview,
+          skillName,
+          model,
           iter: toolIter,
           elapsedMs: Date.now() - startedAt,
         });
@@ -276,6 +301,7 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   const elapsedMs = Date.now() - startedAt;
   const turns = childLoop.stats.turns.length;
   const costUsd = childLoop.stats.totalCost;
+  const usage = aggregateChildUsage(childLoop);
 
   const truncated =
     final.length > maxResultChars
@@ -285,11 +311,15 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
   sink?.current?.({
     kind: "end",
     task: taskPreview,
+    skillName,
+    model,
     iter: toolIter,
     elapsedMs,
     summary: errorMessage ? undefined : truncated.slice(0, 120),
     error: errorMessage,
     turns,
+    costUsd,
+    usage,
   });
 
   return {
@@ -300,7 +330,27 @@ export async function spawnSubagent(opts: SpawnSubagentOptions): Promise<Subagen
     toolIters: toolIter,
     elapsedMs,
     costUsd,
+    model,
+    skillName,
+    usage,
   };
+}
+
+/**
+ * Sum the child loop's per-turn `Usage` into one aggregate record.
+ * Zero-filled when the loop made no API calls (e.g. failed before the
+ * first request) so downstream consumers always see a valid shape.
+ */
+function aggregateChildUsage(loop: CacheFirstLoop): Usage {
+  const agg = new Usage();
+  for (const t of loop.stats.turns) {
+    agg.promptTokens += t.usage.promptTokens;
+    agg.completionTokens += t.usage.completionTokens;
+    agg.totalTokens += t.usage.totalTokens;
+    agg.promptCacheHitTokens += t.usage.promptCacheHitTokens;
+    agg.promptCacheMissTokens += t.usage.promptCacheMissTokens;
+  }
+  return agg;
 }
 
 /**

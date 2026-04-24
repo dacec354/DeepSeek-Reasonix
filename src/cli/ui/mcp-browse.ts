@@ -1,0 +1,242 @@
+/**
+ * `/resource` and `/prompt` slash handlers for the chat/code TUI.
+ *
+ * The slash-command registry (slash.ts) advertises both commands so the
+ * argument-level picker and /help surface them, but the actual read/fetch
+ * work is async — McpClient.readResource and getPrompt both round-trip to
+ * the server — so it doesn't fit the synchronous `handleSlash` shape used
+ * by every other slash command. App.tsx intercepts the commands directly
+ * and calls into the helpers below.
+ *
+ * Split by effect boundary:
+ *   - formatters (resource list, contents, prompt list, messages) are
+ *     pure over already-fetched data and unit-tested
+ *   - find-server helpers are pure lookups against inspection reports
+ *   - `handleMcpBrowseSlash` is the async orchestrator App.tsx calls
+ *
+ * v1 intentionally does NOT inject the fetched resource/prompt into the
+ * next model turn. It's a display-only browser so users can see what
+ * their MCP servers expose. A future version may add a Tab-to-inject
+ * hotkey once the UX is settled.
+ */
+
+import type { McpClient } from "../../mcp/client.js";
+import type {
+  GetPromptResult,
+  McpPromptMessage,
+  McpResourceContents,
+  ReadResourceResult,
+} from "../../mcp/types.js";
+import type { DisplayEvent } from "./EventLog.js";
+import type { McpServerSummary } from "./slash.js";
+
+/**
+ * React setState for Historical — typed loose because the App state
+ * shape is App-internal. We only ever append, so `(prev) => prev.concat(row)`
+ * works against any array-of-DisplayEvent state.
+ */
+export type HistoricalSetter = (updater: (prev: DisplayEvent[]) => DisplayEvent[]) => void;
+
+export function formatResourceList(servers: readonly McpServerSummary[]): string {
+  const lines: string[] = [];
+  let total = 0;
+  for (const s of servers) {
+    if (!s.report.resources.supported) continue;
+    const items = s.report.resources.items;
+    if (items.length === 0) continue;
+    lines.push(`[${s.label}] ${items.length} resource(s):`);
+    for (const r of items.slice(0, 20)) {
+      const name = r.name && r.name !== r.uri ? `  ${r.name}` : "";
+      const mime = r.mimeType ? ` · ${r.mimeType}` : "";
+      lines.push(`  · ${r.uri}${name}${mime}`);
+      total++;
+    }
+    if (items.length > 20) lines.push(`  (+${items.length - 20} more)`);
+    lines.push("");
+  }
+  if (total === 0) {
+    return "No resources on any connected MCP server (or no servers connected). `/mcp` shows the current set.";
+  }
+  lines.push("Read one: `/resource <uri>` — or use Tab in the picker.");
+  return lines.join("\n");
+}
+
+export function formatPromptList(servers: readonly McpServerSummary[]): string {
+  const lines: string[] = [];
+  let total = 0;
+  for (const s of servers) {
+    if (!s.report.prompts.supported) continue;
+    const items = s.report.prompts.items;
+    if (items.length === 0) continue;
+    lines.push(`[${s.label}] ${items.length} prompt(s):`);
+    for (const p of items.slice(0, 20)) {
+      const desc = p.description ? ` — ${p.description}` : "";
+      const argHint =
+        p.arguments && p.arguments.length > 0
+          ? ` (args: ${p.arguments.map((a) => a.name + (a.required ? "*" : "?")).join(", ")})`
+          : "";
+      lines.push(`  · ${p.name}${argHint}${desc}`);
+      total++;
+    }
+    if (items.length > 20) lines.push(`  (+${items.length - 20} more)`);
+    lines.push("");
+  }
+  if (total === 0) {
+    return "No prompts on any connected MCP server (or no servers connected). `/mcp` shows the current set.";
+  }
+  lines.push(
+    "Fetch one: `/prompt <name>` — args are not supported yet; prompts with required args will surface an error from the server.",
+  );
+  return lines.join("\n");
+}
+
+export function findServerForResource(
+  servers: readonly McpServerSummary[],
+  uri: string,
+): McpServerSummary | null {
+  for (const s of servers) {
+    if (!s.report.resources.supported) continue;
+    if (s.report.resources.items.some((r) => r.uri === uri)) return s;
+  }
+  return null;
+}
+
+export function findServerForPrompt(
+  servers: readonly McpServerSummary[],
+  name: string,
+): McpServerSummary | null {
+  for (const s of servers) {
+    if (!s.report.prompts.supported) continue;
+    if (s.report.prompts.items.some((p) => p.name === name)) return s;
+  }
+  return null;
+}
+
+export function formatResourceContents(uri: string, result: ReadResourceResult): string {
+  const lines: string[] = [`Resource ${uri} (${result.contents.length} content block(s)):`, ""];
+  for (let i = 0; i < result.contents.length; i++) {
+    const c = result.contents[i]!;
+    const header = `— block ${i + 1}${c.mimeType ? ` · ${c.mimeType}` : ""}`;
+    lines.push(header);
+    lines.push(formatOneResourceContent(c));
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+function formatOneResourceContent(c: McpResourceContents): string {
+  if ("text" in c) {
+    const MAX = 8_000;
+    if (c.text.length > MAX) {
+      return `${c.text.slice(0, MAX)}\n\n[…truncated ${c.text.length - MAX} chars; full contents available via McpClient.readResource in library mode.]`;
+    }
+    return c.text;
+  }
+  // blob — we can't render arbitrary binary in the TUI; give the size.
+  const bytes = typeof c.blob === "string" ? approximateBase64ByteSize(c.blob) : 0;
+  return `[binary · ~${bytes.toLocaleString()} bytes · base64]`;
+}
+
+function approximateBase64ByteSize(b64: string): number {
+  // 4 base64 chars encode 3 bytes; padding `=` trims the output.
+  const padding = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+  return Math.floor((b64.length * 3) / 4) - padding;
+}
+
+export function formatPromptMessages(name: string, result: GetPromptResult): string {
+  const lines: string[] = [
+    `Prompt ${name}${result.description ? ` — ${result.description}` : ""}`,
+    `(${result.messages.length} message(s))`,
+    "",
+  ];
+  for (let i = 0; i < result.messages.length; i++) {
+    const m = result.messages[i]!;
+    lines.push(`— ${i + 1}. ${m.role}`);
+    lines.push(formatOnePromptMessage(m));
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+function formatOnePromptMessage(m: McpPromptMessage): string {
+  const block = m.content as { type?: string; text?: string; resource?: McpResourceContents };
+  if (block.type === "text" && typeof block.text === "string") return block.text;
+  if (block.type === "resource" && block.resource) {
+    return `[resource: ${block.resource.uri}]\n${formatOneResourceContent(block.resource)}`;
+  }
+  return `[non-text content: ${block.type ?? "unknown"}]`;
+}
+
+/**
+ * Orchestrator. Looks up the right server, calls readResource/getPrompt
+ * via its `client`, and pushes one info row into `Historical`. Errors
+ * (server missing, -32601, network) surface as a warning row; the user
+ * can always fall back to `reasonix mcp inspect <spec>` for diagnostics.
+ */
+export async function handleMcpBrowseSlash(
+  kind: "resource" | "prompt",
+  arg: string,
+  servers: readonly McpServerSummary[],
+  setHistorical: HistoricalSetter,
+): Promise<void> {
+  const ts = Date.now();
+  const push = (role: DisplayEvent["role"], text: string) => {
+    setHistorical((prev) => [...prev, { id: `mcp-${role}-${ts}-${prev.length}`, role, text }]);
+  };
+
+  // No arg → list mode.
+  if (!arg) {
+    push("info", kind === "resource" ? formatResourceList(servers) : formatPromptList(servers));
+    return;
+  }
+
+  if (kind === "resource") {
+    const server = findServerForResource(servers, arg);
+    if (!server) {
+      push(
+        "warning",
+        `no server exposes resource "${arg}". \`/resource\` with no arg lists what's available.`,
+      );
+      return;
+    }
+    const client: McpClient | undefined = server.client;
+    if (!client) {
+      push(
+        "warning",
+        `server [${server.label}] is not connected (display-only). Resource read requires a live MCP client.`,
+      );
+      return;
+    }
+    try {
+      const result = await client.readResource(arg);
+      push("info", formatResourceContents(arg, result));
+    } catch (err) {
+      push("warning", `readResource failed: ${(err as Error).message}`);
+    }
+    return;
+  }
+
+  // prompt
+  const server = findServerForPrompt(servers, arg);
+  if (!server) {
+    push(
+      "warning",
+      `no server exposes prompt "${arg}". \`/prompt\` with no arg lists what's available.`,
+    );
+    return;
+  }
+  const client: McpClient | undefined = server.client;
+  if (!client) {
+    push(
+      "warning",
+      `server [${server.label}] is not connected (display-only). Prompt fetch requires a live MCP client.`,
+    );
+    return;
+  }
+  try {
+    const result = await client.getPrompt(arg);
+    push("info", formatPromptMessages(arg, result));
+  } catch (err) {
+    push("warning", `getPrompt failed: ${(err as Error).message}`);
+  }
+}

@@ -126,6 +126,13 @@ describe("registerSubagentTool", () => {
     expect(end.summary).toBe("done");
     expect(end.turns).toBe(1);
     expect(end.error).toBeUndefined();
+    // 0.5.14: end event also carries cost, model, and aggregate usage
+    // so the sink can write a subagent row to the usage log without
+    // recomputing anything.
+    expect(end.model).toBeTruthy();
+    expect(end.usage).toBeDefined();
+    expect(end.usage?.promptTokens).toBeGreaterThan(0);
+    expect(end.costUsd).toBeGreaterThan(0);
   });
 
   it("emits a progress event for each tool result inside the child loop", async () => {

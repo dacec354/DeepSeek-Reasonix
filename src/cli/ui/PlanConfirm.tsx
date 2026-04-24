@@ -34,16 +34,66 @@ export interface PlanConfirmProps {
    */
   maxRenderedChars?: number;
   projectRoot?: string;
+  /**
+   * Override the terminal-row count used for vertical clamping. Tests
+   * pass this to avoid depending on `process.stdout.rows`; runtime
+   * callers leave it unset and we read the real TTY size.
+   */
+  terminalRows?: number;
 }
 
 const DEFAULT_MAX_RENDERED = 2400;
+/**
+ * Reserved rows for the picker chrome (border + header + divider +
+ * open-questions hint + SingleSelect with three options + footer + the
+ * assistant-turn block Ink already printed above). Empirically ~16 on a
+ * wide terminal; we round up to 18 to leave a visible strip of the plan
+ * even on a 24-row default instead of pushing the picker out of view.
+ *
+ * When the terminal is this tall or shorter we fall through to a
+ * minimum of 6 rendered body lines so the user sees SOMETHING rather
+ * than a single-line stub.
+ */
+const PICKER_CHROME_ROWS = 18;
+const MIN_BODY_ROWS = 6;
 
-export function PlanConfirm({ plan, onChoose, maxRenderedChars, projectRoot }: PlanConfirmProps) {
+/**
+ * Trim `text` to the first `maxLines` lines, appending a truncation
+ * marker when it was cut. Each line is clamped to ~ terminal width so
+ * wrapped lines don't double-count against the row budget — we can't
+ * know the exact rendered height of a Markdown block (headings, code
+ * fences, list bullets add chrome), so the row cap is conservative on
+ * purpose.
+ */
+export function clampBodyByLines(text: string, maxLines: number): string {
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
+  const kept = lines.slice(0, maxLines).join("\n");
+  const dropped = lines.length - maxLines;
+  return `${kept}\n\n… (${dropped} more lines truncated — resize the terminal to see more, or /tool for the full proposal)`;
+}
+
+function PlanConfirmInner({
+  plan,
+  onChoose,
+  maxRenderedChars,
+  projectRoot,
+  terminalRows,
+}: PlanConfirmProps) {
   const cap = maxRenderedChars ?? DEFAULT_MAX_RENDERED;
-  const tooLong = plan.length > cap;
-  const visible = tooLong
+  const charTrunc = plan.length > cap;
+  const charCapped = charTrunc
     ? `${plan.slice(0, cap)}\n\n… (${plan.length - cap} chars truncated — use /tool to view the full proposal)`
     : plan;
+  // Vertical clamp. Flicker root-cause: when rendered content exceeds
+  // the TTY row count Ink falls back to "clear + full redraw" each
+  // frame, and every parent re-render redraws the big Markdown subtree.
+  // Capping the body to (rows - picker chrome) keeps the whole modal
+  // inside the terminal so Ink uses incremental diffs and the picker
+  // stops thrashing. See Bug A in 0.5.14.
+  const rows = terminalRows ?? process.stdout?.rows ?? 24;
+  const bodyRowBudget = Math.max(MIN_BODY_ROWS, rows - PICKER_CHROME_ROWS);
+  const visible = clampBodyByLines(charCapped, bodyRowBudget);
   // Crude signal for "the model left questions or risks for me" — the
   // typical section headings. Triggers an extra hint toward the Refine
   // option so users know where to answer them.
@@ -103,3 +153,10 @@ export function PlanConfirm({ plan, onChoose, maxRenderedChars, projectRoot }: P
     </Box>
   );
 }
+
+// React.memo: parent App re-renders every 120ms while the global ticker
+// is running (even with the live status rows hidden — context changes
+// propagate). Unless props change, skip re-rendering the heavy Markdown
+// subtree. Default shallow prop compare is fine — `plan` + `onChoose`
+// identity + `projectRoot` are the only fields that change.
+export const PlanConfirm = React.memo(PlanConfirmInner);

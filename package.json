@@ -1,6 +1,6 @@
 {
   "name": "reasonix",
-  "version": "0.5.13",
+  "version": "0.5.14",
   "description": "DeepSeek-native agent framework: cache-first loop, R1 thought harvesting, tool-call repair.",
   "type": "module",
   "bin": {

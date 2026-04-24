@@ -262,6 +262,102 @@ describe("renderDashboard", () => {
     expect(out).toContain("tracked since:");
   });
 
+  it("surfaces a subagent activity section when subagent records are present", () => {
+    const agg = aggregateUsage(
+      [
+        {
+          ts: 1_700_000_000_000,
+          session: "s",
+          model: "deepseek-chat",
+          promptTokens: 500,
+          completionTokens: 60,
+          cacheHitTokens: 400,
+          cacheMissTokens: 100,
+          costUsd: 0.002,
+          claudeEquivUsd: 0.02,
+          kind: "subagent",
+          subagent: {
+            skillName: "explore",
+            taskPreview: "find foo",
+            toolIters: 3,
+            durationMs: 2_500,
+          },
+        },
+        {
+          ts: 1_700_000_000_000,
+          session: "s",
+          model: "deepseek-chat",
+          promptTokens: 200,
+          completionTokens: 30,
+          cacheHitTokens: 100,
+          cacheMissTokens: 100,
+          costUsd: 0.0015,
+          claudeEquivUsd: 0.015,
+          kind: "subagent",
+          subagent: {
+            skillName: "explore",
+            taskPreview: "find bar",
+            toolIters: 2,
+            durationMs: 1_500,
+          },
+        },
+      ],
+      { now: 1_700_000_000_000 },
+    );
+    expect(agg.subagents?.total).toBe(2);
+    expect(agg.subagents?.bySkill[0]?.skillName).toBe("explore");
+    expect(agg.subagents?.bySkill[0]?.count).toBe(2);
+    const out = renderDashboard(agg, "/tmp/fake.jsonl");
+    expect(out).toContain("subagent activity:");
+    expect(out).toContain("explore");
+    expect(out).toContain("2 run");
+  });
+
+  it("groups subagent records without a skillName under (adhoc)", () => {
+    const agg = aggregateUsage(
+      [
+        {
+          ts: 1_700_000_000_000,
+          session: null,
+          model: "deepseek-chat",
+          promptTokens: 10,
+          completionTokens: 2,
+          cacheHitTokens: 0,
+          cacheMissTokens: 10,
+          costUsd: 0.001,
+          claudeEquivUsd: 0.01,
+          kind: "subagent",
+          subagent: { taskPreview: "raw call", toolIters: 1, durationMs: 500 },
+        },
+      ],
+      { now: 1_700_000_000_000 },
+    );
+    expect(agg.subagents?.bySkill[0]?.skillName).toBe("(adhoc)");
+  });
+
+  it("includes subagent cost in the main buckets (it's real spend)", () => {
+    const agg = aggregateUsage(
+      [
+        {
+          ts: 1_700_000_000_000 - 60_000,
+          session: "s",
+          model: "deepseek-chat",
+          promptTokens: 0,
+          completionTokens: 0,
+          cacheHitTokens: 0,
+          cacheMissTokens: 0,
+          costUsd: 0.5,
+          claudeEquivUsd: 5,
+          kind: "subagent",
+          subagent: { skillName: "explore", taskPreview: "x", toolIters: 1, durationMs: 100 },
+        },
+      ],
+      { now: 1_700_000_000_000 },
+    );
+    expect(agg.buckets[0]?.costUsd).toBeCloseTo(0.5);
+    expect(agg.buckets[0]?.turns).toBe(1);
+  });
+
   it("renders em-dashes for empty buckets rather than $0.000000", () => {
     const agg = aggregateUsage(
       [
