@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <em>Cache-first agent loop for DeepSeek V3 &amp; R1 — Ink TUI, MCP first-class, no LangChain.</em>
+  <em>Cache-first agent loop for DeepSeek V4 (flash + pro) — Ink TUI, MCP first-class, no LangChain.</em>
 </p>
 
 # Reasonix
@@ -133,6 +133,34 @@ shell call will execute. Use for high-stakes changes you want to
 audit before the model touches disk. `/plan off` or picker
 Approve/Cancel exits.
 
+### Prompt prefixes — `!cmd` and `@path`
+
+Two inline shortcuts that don't need a slash:
+
+**`!<cmd>` — run a shell command in the sandbox and feed it to the
+model.** Typed at the prompt, like bash. Output lands in the visible
+log AND in the session so the model's next turn reasons about it:
+
+```
+reasonix code › !git status --short
+▸ M src/users.ts
+▸ M src/users.test.ts
+
+reasonix code › 把这两个文件的改动说明一下
+assistant
+  ▸ tool<read_file> → src/users.ts, src/users.test.ts
+  ▸ …
+```
+
+No allowlist gate — user-typed shell = explicit consent. 60s timeout,
+32k char cap, survives session resume since 0.5.14.
+
+**`@path/to/file` — inline a file under "Referenced files."** Start
+typing `@` and a picker appears (↑/↓ navigate, Tab/Enter to insert).
+Good for "what does @src/users.ts do?" without making the model
+`read_file` it first. Sandboxed: relative paths only, no `..` escape,
+64KB per-file cap. Recent files rank higher.
+
 ### `/commit` — stage + commit in one step
 
 ```
@@ -145,12 +173,14 @@ reasonix code › /commit "fix: findByEmail case-insensitive"
 
 - `/tool 1` — dump the last tool call's full output (when the 400-char
   inline clip isn't enough).
-- `/think` — see the model's full R1 reasoning for the last turn
-  (reasoner preset only).
+- `/think` — see the model's full reasoning for the last turn
+  (thinking-mode models: v4-flash / v4-pro / reasoner alias).
 - `/undo` — roll back the last applied edit batch.
 - `/new` — start fresh in the same directory without losing the
   session file.
-- `npx reasonix code --preset max` — R1 + 3-way self-consistency
+- `/effort high` — step down from the default `max` agent-class
+  reasoning_effort for cheaper/faster turns on simple tasks.
+- `npx reasonix code --preset max` — v4-pro + 3-way self-consistency
   branching for gnarly refactors.
 - `npx reasonix code src/` — narrower sandbox (only `src/` is
   writable).
@@ -182,7 +212,9 @@ in the file. No prompts, no completions, no tool arguments.
 ### Staying current
 
 The panel header shows the running version next to `Reasonix` (e.g.
-`Reasonix v0.4.22 · model …`). A quiet 24-hour background check against
+`Reasonix v0.5.21 · deepseek-v4-pro · harvest · max …`, the trailing
+`max` is the reasoning-effort badge — `/effort high` to step down).
+A quiet 24-hour background check against
 the npm registry surfaces a yellow `update: X.Y.Z` on the right side
 of the same row when a newer version has been published. No blocking,
 no nagging — the check runs once per day max and is silent on failure
@@ -403,18 +435,25 @@ rendering, retries.
 | command | what it does |
 |---|---|
 | `/preset <fast\|smart\|max>` | one-tap bundle (model + harvest + branch) |
-| `/model <id>` | switch DeepSeek model (`deepseek-chat`, `deepseek-reasoner`) |
+| `/model <id>` | switch DeepSeek model (`deepseek-v4-flash`, `deepseek-v4-pro`, plus `deepseek-chat` / `deepseek-reasoner` compat aliases) |
+| `/models` | list live models from DeepSeek `/models` endpoint |
 | `/harvest [on\|off]` | toggle R1 plan-state extraction |
 | `/branch <N\|off>` | run N parallel samples per turn, pick best (N ≥ 2) |
-| `/think` | dump the last turn's full R1 reasoning |
+| `/effort <high\|max>` | reasoning_effort cap — `max` is the agent default, `high` is cheaper/faster |
+| `/think` | dump the last turn's full thinking-mode reasoning |
 
 **Context & tools**
 
 | command | what it does |
 |---|---|
-| `/mcp` | list attached MCP servers and their tools |
+| `/mcp` | list attached MCP servers and their tools / resources / prompts |
+| `/resource [uri]` | browse + read MCP resources (no arg → list URIs; `<uri>` → fetch) |
+| `/prompt [name]` | browse + fetch MCP prompts |
 | `/tool [N]` | dump the Nth tool call's full output (1 = latest) |
-| `/compact [cap]` | shrink oversized tool results in the log |
+| `/compact [tokens]` | shrink oversized tool results in the log (default 4000 tokens/result) |
+| `/context` | break down where context tokens are going (system / tools / log) |
+| `/stats` | cross-session cost dashboard (today / week / month / all-time) |
+| `/keys` | keyboard shortcuts + prompt prefixes (`!` / `@` / `/`) cheatsheet |
 
 **Memory & skills**
 
@@ -468,8 +507,8 @@ rendering, retries.
 - Malformed `assistant.tool_calls` / `tool` pairing is validated on
   every outgoing API call so a corrupted session can't keep 400ing.
 - Context gauge turns yellow at 50%, red at 80% with a `/compact`
-  nudge. Approaching the 131k window triggers an automatic
-  compaction attempt before falling back to a forced summary.
+  nudge. Approaching the 1M-token window (V4 flash + pro) triggers an
+  automatic compaction attempt before falling back to a forced summary.
 - The `reasonix code` sandbox refuses any path that resolves outside
   the launch directory, including symlink escape and `..` traversal.
 
@@ -728,7 +767,7 @@ cd reasonix
 npm install
 npm run dev code        # run CLI from source via tsx
 npm run build           # tsup to dist/
-npm test                # vitest (648 tests)
+npm test                # vitest (1007 tests)
 npm run lint            # biome
 npm run typecheck       # tsc --noEmit
 ```
