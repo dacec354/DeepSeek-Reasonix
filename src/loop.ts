@@ -28,6 +28,21 @@ import {
  * otherwise re-pay their cost on every subsequent turn's prompt.
  */
 const ARGS_COMPACT_THRESHOLD_TOKENS = 800;
+/**
+ * Cap applied to every tool RESULT in the log when a turn ends. Big
+ * `read_file` / `search_content` outputs (typical: 3-15 KB) are what
+ * each subsequent turn's prompt keeps paying for, even at 98% cache
+ * hit; the cache-hit price × tokens × turns × flash-or-pro rate is
+ * how $5 sessions turn into $50 over a long project.
+ *
+ * 3000 tokens is the knee of the curve: enough head+tail to keep a
+ * file excerpt recognisable as a citation reference, small enough
+ * that 10 reads ≈ 30K carry-cost instead of 100K+. The model can
+ * always re-read the file if it needs fresh detail — one extra
+ * `read_file` call is vastly cheaper than dragging raw content
+ * through every future turn.
+ */
+const TURN_END_RESULT_CAP_TOKENS = 3000;
 import { AppendOnlyLog, type ImmutablePrefix, VolatileScratch } from "./memory.js";
 import { type RepairReport, ToolCallRepair } from "./repair/index.js";
 import { appendSessionMessage, loadSessionMessages, rewriteSession } from "./session.js";
@@ -403,6 +418,39 @@ export class CacheFirstLoop {
     }
   }
 
+  /**
+   * Fired at the END of a turn (just before `done` is yielded). Shrinks
+   * every tool RESULT in the log that exceeds {@link TURN_END_RESULT_CAP_TOKENS}
+   * to a tight cap so the NEXT turn's prompt doesn't re-pay for big
+   * reads or searches done earlier. Unlike the reactive 40/80%
+   * thresholds which react to context pressure, this runs unconditionally
+   * — the win is preventive: each turn's big outputs get trimmed before
+   * they ride into the next prompt. Saves compounding cost on long
+   * sessions.
+   *
+   * Why compact the JUST-finished turn's results too (not just older
+   * turns)? The same-turn iters already consumed the raw content to
+   * make their decisions — the log is only carried forward for future
+   * prompts. And "let me re-read the file" is vastly cheaper than
+   * "carry this 12KB result in every future turn's prompt forever."
+   *
+   * Safe by construction: args-compact for THIS turn already ran
+   * inside `compactToolCallArgsAfterResponse`; this pass is orthogonal.
+   */
+  private autoCompactToolResultsOnTurnEnd(): void {
+    const before = this.log.toMessages();
+    const shrunk = shrinkOversizedToolResultsByTokens(before, TURN_END_RESULT_CAP_TOKENS);
+    if (shrunk.healedCount === 0) return;
+    this.log.compactInPlace(shrunk.messages);
+    if (this.sessionName) {
+      try {
+        rewriteSession(this.sessionName, shrunk.messages);
+      } catch {
+        /* disk full / perms — in-memory compaction still helps this session */
+      }
+    }
+  }
+
   compact(maxTokens = 4000): {
     healedCount: number;
     tokensSaved: number;
@@ -637,6 +685,7 @@ export class CacheFirstLoop {
           content: stoppedMsg,
           forcedSummary: true,
         };
+        this.autoCompactToolResultsOnTurnEnd();
         yield { turn: this._turn, role: "done", content: stoppedMsg };
         return;
       }
@@ -905,6 +954,7 @@ export class CacheFirstLoop {
         // synthetic OR user re-prompt) starts immediately and gets to
         // produce its own answer.
         if (signal.aborted) {
+          this.autoCompactToolResultsOnTurnEnd();
           yield { turn: this._turn, role: "done", content: "" };
           return;
         }
@@ -987,6 +1037,7 @@ export class CacheFirstLoop {
       }
 
       if (repairedCalls.length === 0) {
+        this.autoCompactToolResultsOnTurnEnd();
         yield { turn: this._turn, role: "done", content: assistantContent };
         return;
       }
@@ -1010,15 +1061,18 @@ export class CacheFirstLoop {
       //      tool_calls"). The summary is about what was LEARNED so far,
       //      not what we intended to do next.
       const ctxMax = DEEPSEEK_CONTEXT_TOKENS[this.model] ?? DEFAULT_CONTEXT_TOKENS;
-      // Proactive tier: between 60% and 80%, pre-shrink oversized tool
+      // Proactive tier: between 40% and 80%, pre-shrink oversized tool
       // results to a moderate cap (4k tokens) so the next iter doesn't
       // slam straight into the 80% reactive path — which shrinks far
       // more aggressively (1k tokens) and risks losing useful tail
-      // info. This catches the slow-growth pattern (lots of medium
-      // reads) before it compounds.
+      // info. Lowered from 60% to 40% (v0.6) because cost compounds:
+      // carrying a 10K-token read_file through even 3-4 more turns
+      // costs more than the one-shot compact. The turn-end auto-compact
+      // already caps results at 3K, so this threshold mostly catches
+      // multi-iter turns where one tool returned a huge payload mid-turn.
       if (usage) {
         const ratio = usage.promptTokens / ctxMax;
-        if (ratio > 0.6 && ratio <= 0.8) {
+        if (ratio > 0.4 && ratio <= 0.8) {
           const before = usage.promptTokens;
           const soft = this.compact(4_000);
           if (soft.healedCount > 0) {
@@ -1233,6 +1287,7 @@ export class CacheFirstLoop {
         stats: summaryStats,
         forcedSummary: true,
       };
+      this.autoCompactToolResultsOnTurnEnd();
       yield { turn: this._turn, role: "done", content: summary };
     } catch (err) {
       const label = errorLabelFor(opts.reason, this.maxToolIters);
@@ -1242,6 +1297,7 @@ export class CacheFirstLoop {
         content: "",
         error: `${label} and the fallback summary call failed: ${(err as Error).message}. Run /clear and retry with a narrower question, or raise --max-tool-iters.`,
       };
+      this.autoCompactToolResultsOnTurnEnd();
       yield { turn: this._turn, role: "done", content: "" };
     }
   }
