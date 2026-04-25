@@ -313,70 +313,86 @@ export function PromptInput({
   const showHugeBufferHints = lines.length > 20;
 
   return (
-    <>
-      <Box borderStyle="round" borderColor={borderColor} paddingX={1} flexDirection="column">
-        {renderItems.map((item, renderIdx) => {
-          if (item.kind === "skip") {
-            return (
-              // biome-ignore lint/suspicious/noArrayIndexKey: stable — skip markers are derived from a fixed-size window over `lines`
-              <Box key={`skip-${renderIdx}`}>
-                <Text dimColor>{continuationIndent}</Text>
-                <Text
-                  dimColor
-                >{`[… ${item.linesHidden} line${item.linesHidden === 1 ? "" : "s"} hidden — full content kept, submitted on Enter …]`}</Text>
-              </Box>
-            );
-          }
-          const line = item.line;
-          const i = item.originalIndex;
-          const isFirst = i === 0;
-          const showPlaceholder = isFirst && value.length === 0;
-          const isCursorLine = i === cursorLine;
+    // Explicit `width={cols}` pins the Box to the exact terminal width.
+    // Without it, Ink auto-flexes children — long CJK input (Chinese
+    // chars are 2 cells wide) can overflow the terminal column count
+    // and trigger Ink's eraseLines miscount, which leaves ghost top
+    // borders stacking in scrollback every ticker tick. Same fix
+    // StatsPanel applies for the header frame.
+    <Box
+      borderStyle="round"
+      borderColor={borderColor}
+      paddingX={1}
+      flexDirection="column"
+      width={cols}
+    >
+      {renderItems.map((item, renderIdx) => {
+        if (item.kind === "skip") {
           return (
-            <Box key={`ln-${i}`}>
-              {isFirst ? (
-                <Text bold color={borderColor}>
-                  {promptPrefix}
-                </Text>
-              ) : (
-                <Text dimColor>{continuationIndent}</Text>
-              )}
-              {showPlaceholder ? (
-                <>
-                  {isCursorLine && !disabled ? (
-                    <Text color={borderColor}>{showCursor ? "▌" : " "}</Text>
-                  ) : null}
-                  <Text dimColor>{effectivePlaceholder}</Text>
-                </>
-              ) : isCursorLine && !disabled ? (
-                <LineWithCursor
-                  line={line}
-                  col={cursorCol}
-                  showCursor={showCursor}
-                  borderColor={borderColor}
-                  pastes={pastesRef.current}
-                />
-              ) : (
-                <RenderLine line={line} pastes={pastesRef.current} />
-              )}
+            // biome-ignore lint/suspicious/noArrayIndexKey: stable — skip markers are derived from a fixed-size window over `lines`
+            <Box key={`skip-${renderIdx}`}>
+              <Text dimColor>{continuationIndent}</Text>
+              <Text
+                dimColor
+              >{`[… ${item.linesHidden} line${item.linesHidden === 1 ? "" : "s"} hidden — full content kept, submitted on Enter …]`}</Text>
             </Box>
           );
-        })}
-        {showHugeBufferHints && !disabled ? (
-          <Box>
-            <Text dimColor>{continuationIndent}</Text>
-            <Text dimColor>
-              {`[${lines.length} lines · PageUp/PageDown jump to top/bottom · Ctrl+U clear · Ctrl+W del word]`}
-            </Text>
+        }
+        const line = item.line;
+        const i = item.originalIndex;
+        const isFirst = i === 0;
+        const showPlaceholder = isFirst && value.length === 0;
+        const isCursorLine = i === cursorLine;
+        return (
+          <Box key={`ln-${i}`}>
+            {isFirst ? (
+              <Text bold color={borderColor}>
+                {promptPrefix}
+              </Text>
+            ) : (
+              <Text dimColor>{continuationIndent}</Text>
+            )}
+            {showPlaceholder ? (
+              <>
+                {isCursorLine && !disabled ? (
+                  <Text color={borderColor}>{showCursor ? "▌" : " "}</Text>
+                ) : null}
+                <Text dimColor>{effectivePlaceholder}</Text>
+              </>
+            ) : isCursorLine && !disabled ? (
+              <LineWithCursor
+                line={line}
+                col={cursorCol}
+                showCursor={showCursor}
+                borderColor={borderColor}
+                pastes={pastesRef.current}
+              />
+            ) : (
+              <RenderLine line={line} pastes={pastesRef.current} />
+            )}
           </Box>
-        ) : null}
-      </Box>
+        );
+      })}
+      {showHugeBufferHints && !disabled ? (
+        <Box>
+          <Text dimColor>{continuationIndent}</Text>
+          <Text dimColor>
+            {`[${lines.length} lines · PageUp/PageDown jump to top/bottom · Ctrl+U clear · Ctrl+W del word]`}
+          </Text>
+        </Box>
+      ) : null}
+      {/* Disabled-state Esc hint kept inside the bordered Box so the
+          live region's structure is one Box, not a `<>`-wrapped pair.
+          The fragment shape was a structural change with no layout
+          benefit — moving back here matches the simpler shape from
+          before 0.7.2, which the duplicating-borders Ink quirk amplified. */}
       {disabled ? (
-        <Box paddingX={1}>
+        <Box>
+          <Text dimColor>{continuationIndent}</Text>
           <Text dimColor>[Esc] to stop</Text>
         </Box>
       ) : null}
-    </>
+    </Box>
   );
 }
 
