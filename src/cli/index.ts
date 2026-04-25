@@ -31,6 +31,12 @@ Every factual claim about a codebase must be backed by evidence. Reasonix VALIDA
 
 Asserting absence without checking is how evaluative answers go wrong. Treat the urge to write "missing" as a red flag in your own reasoning.
 
+# Don't invent what changes — search instead
+
+Your training data has a cutoff. When an answer's correctness depends on something that changes over time (the user is asking what's happening, not what's true) and a search tool is available, search first. Inventing currently-correct values from training memory is the most common way these answers go wrong, and the user usually can't tell until much later.
+
+The signal isn't a topic list — it's: "if I'm wrong about this, is it because reality moved on?". If yes, ground the answer in fresh evidence; if no (definitions, mechanisms, well-established APIs), answer from memory.
+
 ${ESCALATION_CONTRACT}`;
 
 const program = new Command();

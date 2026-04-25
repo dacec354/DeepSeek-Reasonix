@@ -1385,6 +1385,21 @@ export class CacheFirstLoop {
       }
 
       if (repairedCalls.length === 0) {
+        // Two sub-cases here:
+        //   (a) Model legitimately produced ZERO tool calls — final
+        //       prose answer, terminate the loop.
+        //   (b) Model emitted tool calls but storm-breaker ate them
+        //       all (allSuppressed). The user sees only the warning
+        //       row and a silent stop, which feels like the agent
+        //       gave up. Route through the forced-summary path so
+        //       the model gets one no-tools call to explain what it
+        //       tried, what blocked it, and what would unblock —
+        //       turning a silent dead-end into actionable feedback.
+        const allSuppressed = report.stormsBroken > 0 && toolCalls.length > 0;
+        if (allSuppressed) {
+          yield* this.forceSummaryAfterIterLimit({ reason: "stuck" });
+          return;
+        }
         this.autoCompactToolResultsOnTurnEnd();
         yield { turn: this._turn, role: "done", content: assistantContent };
         return;
@@ -1588,7 +1603,7 @@ export class CacheFirstLoop {
   }
 
   private async *forceSummaryAfterIterLimit(
-    opts: { reason: "budget" | "aborted" | "context-guard" } = { reason: "budget" },
+    opts: { reason: "budget" | "aborted" | "context-guard" | "stuck" } = { reason: "budget" },
   ): AsyncGenerator<LoopEvent> {
     try {
       // The summary call is non-streaming (reasoner, 30-60s typical).
@@ -1819,17 +1834,27 @@ function* hookWarnings(outcomes: HookOutcome[], turn: number): Generator<LoopEve
   }
 }
 
-function reasonPrefixFor(reason: "budget" | "aborted" | "context-guard", iterCap: number): string {
+function reasonPrefixFor(
+  reason: "budget" | "aborted" | "context-guard" | "stuck",
+  iterCap: number,
+): string {
   if (reason === "aborted") return "[aborted by user (Esc) — summarizing what I found so far]";
   if (reason === "context-guard") {
     return "[context budget running low — summarizing before the next call would overflow]";
   }
+  if (reason === "stuck") {
+    return "[stuck on a repeated tool call — explaining what was tried and what's blocking progress]";
+  }
   return `[tool-call budget (${iterCap}) reached — forcing summary from what I found]`;
 }
 
-function errorLabelFor(reason: "budget" | "aborted" | "context-guard", iterCap: number): string {
+function errorLabelFor(
+  reason: "budget" | "aborted" | "context-guard" | "stuck",
+  iterCap: number,
+): string {
   if (reason === "aborted") return "aborted by user";
   if (reason === "context-guard") return "context-guard triggered (prompt > 80% of window)";
+  if (reason === "stuck") return "stuck (repeated tool call suppressed by storm-breaker)";
   return `tool-call budget (${iterCap}) reached`;
 }
 

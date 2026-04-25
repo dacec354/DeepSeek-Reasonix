@@ -243,7 +243,7 @@ export function registerWebTools(registry: ToolRegistry, opts: WebToolsOptions =
   registry.register({
     name: "web_search",
     description:
-      "Search the public web. Returns ranked results with title, url, and snippet. Use this when the question needs information more current than your training data, when you're unsure of a factual detail, or when the user asks about a specific webpage/library/release you haven't seen.",
+      "Search the public web. Returns ranked results with title, url, and snippet. Call this when the answer's correctness depends on current state — anything that changes over time (events, prices, releases, status of a thing in the real world). Composing such answers from training memory invents stale numbers; search first, then ground the answer in the results. For evergreen / definitional questions you don't need this.",
     readOnly: true,
     parameters: {
       type: "object",

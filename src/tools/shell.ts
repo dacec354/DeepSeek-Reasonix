@@ -291,7 +291,15 @@ export async function runCommand(
     cwd: opts.cwd,
     shell: false, // no shell-expansion — see header comment
     windowsHide: true,
-    env: process.env,
+    // PYTHONIOENCODING + PYTHONUTF8 force any spawned Python child
+    // (run_command running `python script.py`, etc.) to emit UTF-8
+    // on stdout/stderr. Without this, Chinese-Windows defaults
+    // Python's stdout encoder to GBK and `print("…")` raises
+    // UnicodeEncodeError on emoji / non-GBK chars — the model then
+    // sees a Python traceback instead of the script's real output
+    // and goes around in circles trying to fix the wrong problem.
+    // Harmless on non-Python processes (env vars they don't read).
+    env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
   };
 
   // Windows: two layered fixes on top of shell:false —

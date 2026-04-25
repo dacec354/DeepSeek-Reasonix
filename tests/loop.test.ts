@@ -380,6 +380,62 @@ describe("CacheFirstLoop (non-streaming)", () => {
     expect(events[events.length - 1]!.role).toBe("done");
   });
 
+  it("storm-broken-all-suppressed forces a summary instead of stopping silently", async () => {
+    // Repro of the user-reported "怎么就直接停了" — model loops on the
+    // same broken tool call (e.g. read_file with empty path), the
+    // storm-breaker suppresses every call after the threshold, and
+    // pre-fix the loop would yield `done` with no prose. Fix routes
+    // through forceSummaryAfterIterLimit so the model gets one
+    // no-tools call to explain what was tried + what's blocking.
+    const reg = new ToolRegistry();
+    reg.register({
+      name: "probe",
+      description: "no-op",
+      parameters: { type: "object", properties: {} },
+      fn: async () => "ok",
+    });
+    // Same (name, args) signature each iter — storm-breaker fires on
+    // the third identical call. Threshold = 3, window = 6 (defaults).
+    const dupCall = {
+      id: "c1",
+      type: "function",
+      function: { name: "probe", arguments: "{}" },
+    };
+    const responses: FakeResponseShape[] = [
+      { content: "", tool_calls: [dupCall] },
+      { content: "", tool_calls: [{ ...dupCall, id: "c2" }] },
+      { content: "", tool_calls: [{ ...dupCall, id: "c3" }] },
+      // Forced-summary call — no tools advertised, model just narrates.
+      {
+        content:
+          "I tried probe(no args) three times — same result each call. Need a different approach.",
+      },
+    ];
+    const client = makeClient(responses);
+    const loop = new CacheFirstLoop({
+      client,
+      prefix: new ImmutablePrefix({ system: "s", toolSpecs: reg.specs() }),
+      tools: reg,
+      stream: false,
+      maxToolIters: 8,
+    });
+
+    const events: { role: string; forcedSummary?: boolean; content?: string }[] = [];
+    for await (const ev of loop.step("explore")) {
+      events.push({ role: ev.role, forcedSummary: ev.forcedSummary, content: ev.content });
+    }
+
+    // Storm warning fires.
+    expect(events.some((e) => e.role === "warning" && /storm/i.test(e.content ?? ""))).toBe(true);
+
+    // Final assistant_final must be tagged forcedSummary with the
+    // "stuck" prefix — proves we didn't just yield `done`.
+    const finals = events.filter((e) => e.role === "assistant_final");
+    const summary = finals[finals.length - 1];
+    expect(summary?.forcedSummary).toBe(true);
+    expect(summary?.content).toMatch(/stuck on a repeated tool call/);
+  });
+
   it("context-guard diverts to summary when promptTokens > 80% of the window, tagging forcedSummary", async () => {
     const reg = new ToolRegistry();
     reg.register({
