@@ -371,6 +371,15 @@ describe("processMultilineKey — paste burst handling", () => {
     expect(r.submit).toBe(false);
   });
 
+  it("strips ESC-less paste markers (Windows PowerShell + ConPTY case)", () => {
+    // Ink's parse-keypress eats the leading \x1b, leaving bare `[200~` /
+    // `[201~` in `input`. Without the fallback strip the literal
+    // `[201~` ends up inserted into the user's prompt buffer.
+    const r = processMultilineKey("", 0, key({ input: "[200~hello\nworld[201~" }));
+    expect(r.pasteRequest?.content).toBe("hello\nworld");
+    expect(r.submit).toBe(false);
+  });
+
   it("real Enter (input='', return=true) still submits — not mistaken for paste", () => {
     const r = processMultilineKey("foo", 3, key({ input: "", return: true }));
     expect(r.submit).toBe(true);

@@ -20,9 +20,34 @@ import { useTick } from "./ticker.js";
  * (App.tsx writes the enable sequence at mount). Surface as exact
  * literal byte strings so we can locate them in `input` regardless
  * of how stdin chunks the surrounding bytes.
+ *
+ * The fallback variants without the leading `\x1b` cover terminals
+ * (Windows PowerShell + ConPTY + Ink, in particular) where Ink's
+ * `parse-keypress` consumes the ESC byte but routes the remaining
+ * `[200~` / `[201~` into the next `useInput` event as plain text.
+ * Without these fallbacks the literal `[201~` ends up inserted into
+ * the user's prompt buffer.
  */
 const PASTE_START_MARKER = "\u001b[200~";
 const PASTE_END_MARKER = "\u001b[201~";
+const PASTE_START_FALLBACK = "[200~";
+const PASTE_END_FALLBACK = "[201~";
+
+function findPasteStart(input: string): { idx: number; len: number } | null {
+  const a = input.indexOf(PASTE_START_MARKER);
+  if (a !== -1) return { idx: a, len: PASTE_START_MARKER.length };
+  const b = input.indexOf(PASTE_START_FALLBACK);
+  if (b !== -1) return { idx: b, len: PASTE_START_FALLBACK.length };
+  return null;
+}
+
+function findPasteEnd(input: string): { idx: number; len: number } | null {
+  const a = input.indexOf(PASTE_END_MARKER);
+  if (a !== -1) return { idx: a, len: PASTE_END_MARKER.length };
+  const b = input.indexOf(PASTE_END_FALLBACK);
+  if (b !== -1) return { idx: b, len: PASTE_END_FALLBACK.length };
+  return null;
+}
 /**
  * Merge-fallback window for terminals that strip bracketed-paste
  * markers (Windows PowerShell + ConPTY + Ink eats `\x1b[200~`).
@@ -195,23 +220,23 @@ export function PromptInput({
       // appear and we fall back to the per-chunk pasteRequest
       // path below — chunks split visually but stay correct.
       if (pasteAccumRef.current !== null) {
-        const endIdx = input.indexOf(PASTE_END_MARKER);
-        if (endIdx === -1) {
+        const end = findPasteEnd(input);
+        if (end === null) {
           pasteAccumRef.current += input;
           return;
         }
-        const content = pasteAccumRef.current + input.slice(0, endIdx);
+        const content = pasteAccumRef.current + input.slice(0, end.idx);
         pasteAccumRef.current = null;
         registerPaste(content);
         return;
       }
-      const startIdx = input.indexOf(PASTE_START_MARKER);
-      if (startIdx !== -1) {
-        const afterStart = input.slice(startIdx + PASTE_START_MARKER.length);
-        const endIdx = afterStart.indexOf(PASTE_END_MARKER);
-        if (endIdx !== -1) {
+      const start = findPasteStart(input);
+      if (start !== null) {
+        const afterStart = input.slice(start.idx + start.len);
+        const end = findPasteEnd(afterStart);
+        if (end !== null) {
           // Whole paste in one read — register and we're done.
-          registerPaste(afterStart.slice(0, endIdx));
+          registerPaste(afterStart.slice(0, end.idx));
         } else {
           // Open paste mode for subsequent useInput events.
           pasteAccumRef.current = afterStart;

@@ -176,7 +176,15 @@ export function processMultilineKey(
   // the content. Pastes always insert; Enter only submits typed
   // content. We normalize \r\n and bare \r to \n so mixed-line-
   // ending pastes (Windows clipboard, web copy) land cleanly.
-  const stripped = key.input.replaceAll("\u001b[200~", "").replaceAll("\u001b[201~", "");
+  // Strip both the full marker (`\x1b[200~`) and the ESC-stripped
+  // fallback (`[200~`) — the latter shows up on Windows PowerShell +
+  // ConPTY where Ink's parse-keypress eats the leading ESC and routes
+  // the rest into `input` as plain text.
+  const stripped = key.input
+    .replaceAll("\u001b[200~", "")
+    .replaceAll("\u001b[201~", "")
+    .replaceAll("[200~", "")
+    .replaceAll("[201~", "");
   // Paste = newline-containing input with MORE than just the newline
   // itself. A bare "\n" is Ctrl+J / one-keystroke newline (handled
   // below); only multi-char input wrapped around a newline is a real
