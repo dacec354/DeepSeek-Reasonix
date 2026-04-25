@@ -385,6 +385,13 @@ export function App({
   // revised plan starts fresh — old completions don't spill over.
   const planStepsRef = useRef<PlanStep[] | null>(null);
   const completedStepIdsRef = useRef<Set<string>>(new Set());
+  // Markdown body + human-friendly summary captured from submit_plan.
+  // Persisted alongside the structured state so a future Time-Travel
+  // replay can show the model's full original proposal without re-
+  // reading the JSONL log, and so /plans + the resume banner can
+  // identify plans by intent rather than by filename.
+  const planBodyRef = useRef<string | null>(null);
+  const planSummaryRef = useRef<string | null>(null);
   // Wall-clock when the latest tool_start fired. Cleared when the
   // matching `tool` event arrives (or at turn end). Tools are
   // dispatched serially in the loop, so a single ref is enough — no
@@ -403,7 +410,10 @@ export function App({
       clearPlanState(session);
       return;
     }
-    savePlanState(session, steps, completedStepIdsRef.current);
+    const extras: { body?: string; summary?: string } = {};
+    if (planBodyRef.current) extras.body = planBodyRef.current;
+    if (planSummaryRef.current) extras.summary = planSummaryRef.current;
+    savePlanState(session, steps, completedStepIdsRef.current, extras);
   }, [session]);
   const [summary, setSummary] = useState<SessionSummary>({
     turns: 0,
@@ -623,6 +633,8 @@ export function App({
       if (restoredPlan && restoredPlan.steps.length > 0) {
         planStepsRef.current = restoredPlan.steps;
         completedStepIdsRef.current = new Set(restoredPlan.completedStepIds);
+        planBodyRef.current = restoredPlan.body ?? null;
+        planSummaryRef.current = restoredPlan.summary ?? null;
         const when = relativeTime(restoredPlan.updatedAt);
         setHistorical((prev) => [
           ...prev,
@@ -634,6 +646,7 @@ export function App({
               steps: restoredPlan.steps,
               completedStepIds: restoredPlan.completedStepIds,
               relativeTime: when,
+              summary: restoredPlan.summary,
             },
           },
         ]);
@@ -1636,7 +1649,11 @@ export function App({
               ev.content.includes('"PlanProposedError:')
             ) {
               try {
-                const parsed = JSON.parse(ev.content) as { plan?: unknown; steps?: unknown };
+                const parsed = JSON.parse(ev.content) as {
+                  plan?: unknown;
+                  steps?: unknown;
+                  summary?: unknown;
+                };
                 if (typeof parsed.plan === "string" && parsed.plan.trim()) {
                   const planText = parsed.plan.trim();
                   setPendingPlan(planText);
@@ -1648,6 +1665,11 @@ export function App({
                   const steps = Array.isArray(parsed.steps) ? (parsed.steps as PlanStep[]) : null;
                   planStepsRef.current = steps;
                   completedStepIdsRef.current = new Set();
+                  planBodyRef.current = planText;
+                  planSummaryRef.current =
+                    typeof parsed.summary === "string" && parsed.summary.trim()
+                      ? parsed.summary.trim()
+                      : null;
                   persistPlanState();
                   setHistorical((prev) => [
                     ...prev,
@@ -2078,6 +2100,8 @@ export function App({
       // said this isn't the path they want, no point holding onto it.
       planStepsRef.current = null;
       completedStepIdsRef.current = new Set();
+      planBodyRef.current = null;
+      planSummaryRef.current = null;
       persistPlanState();
       togglePlanMode(false);
       const marker = "▸ plan cancelled";
@@ -2587,6 +2611,7 @@ export function App({
           <PlanConfirm
             plan={pendingPlan}
             steps={planStepsRef.current ?? undefined}
+            summary={planSummaryRef.current ?? undefined}
             onChoose={stableHandlePlanConfirm}
             projectRoot={hookCwd}
           />

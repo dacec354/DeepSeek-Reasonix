@@ -29,11 +29,13 @@ export type PlanConfirmChoice = "approve" | "refine" | "cancel";
 export interface PlanConfirmProps {
   plan: string;
   steps?: PlanStep[];
+  /** Optional human-friendly title from the model — surfaced in the header. */
+  summary?: string;
   onChoose: (choice: PlanConfirmChoice) => void;
   projectRoot?: string;
 }
 
-function PlanConfirmInner({ plan, steps, onChoose }: PlanConfirmProps) {
+function PlanConfirmInner({ plan, steps, summary, onChoose }: PlanConfirmProps) {
   // Crude signal for "the model left questions or risks for me" — the
   // typical section headings. Triggers an extra hint toward the Refine
   // option so users know where to answer them.
@@ -43,10 +45,17 @@ function PlanConfirmInner({ plan, steps, onChoose }: PlanConfirmProps) {
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
-      <Box>
-        <Text bold color="cyan">
-          ▸ plan proposed (full text above) — approve / refine / cancel
-        </Text>
+      <Box flexDirection="column">
+        <Box>
+          <Text bold color="cyan">
+            ▸ plan proposed (full text above) — approve / refine / cancel
+          </Text>
+        </Box>
+        {summary ? (
+          <Box>
+            <Text color="cyan">{`  ${summary}`}</Text>
+          </Box>
+        ) : null}
       </Box>
       {hasOpenQuestions ? (
         <Box marginTop={1}>

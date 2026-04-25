@@ -65,26 +65,30 @@ export interface PlanStep {
 export class PlanProposedError extends Error {
   readonly plan: string;
   readonly steps?: PlanStep[];
-  constructor(plan: string, steps?: PlanStep[]) {
+  readonly summary?: string;
+  constructor(plan: string, steps?: PlanStep[], summary?: string) {
     super(
       "PlanProposedError: plan submitted. STOP calling tools now — the TUI has shown the plan to the user. Wait for their next message; it will either approve (you'll then implement the plan), request a refinement (you should explore more and submit an updated plan), or cancel (drop the plan and ask what they want instead). Don't call any tools in the meantime.",
     );
     this.name = "PlanProposedError";
     this.plan = plan;
     this.steps = steps;
+    this.summary = summary;
   }
 
   /**
    * Structured tool-result shape. Consumed by the TUI to extract the
-   * plan without regex-scraping the error message. `steps` is only
-   * included when the model supplied a structured list.
+   * plan without regex-scraping the error message. Optional fields
+   * are omitted from the payload when absent so consumers don't see
+   * `undefined` keys in the JSON.
    */
-  toToolResult(): { error: string; plan: string; steps?: PlanStep[] } {
-    const payload: { error: string; plan: string; steps?: PlanStep[] } = {
+  toToolResult(): { error: string; plan: string; steps?: PlanStep[]; summary?: string } {
+    const payload: { error: string; plan: string; steps?: PlanStep[]; summary?: string } = {
       error: `${this.name}: ${this.message}`,
       plan: this.plan,
     };
     if (this.steps && this.steps.length > 0) payload.steps = this.steps;
+    if (this.summary) payload.summary = this.summary;
     return payload;
   }
 }
@@ -270,15 +274,22 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
             required: ["id", "title", "action"],
           },
         },
+        summary: {
+          type: "string",
+          description:
+            "Optional. One-sentence human-friendly title for the plan, ~80 chars max. Surfaces in the PlanConfirm picker header and in /plans listings ('▸ refactor auth into signed tokens · 2/5 done'). Skip for trivial plans where the first line of the markdown body is already short and clear.",
+        },
       },
       required: ["plan"],
     },
-    fn: async (args: { plan: string; steps?: unknown }) => {
+    fn: async (args: { plan: string; steps?: unknown; summary?: string }) => {
       const plan = (args?.plan ?? "").trim();
       if (!plan) {
         throw new Error("submit_plan: empty plan — write a markdown plan and try again.");
       }
       const steps = sanitizeSteps(args?.steps);
+      const summary =
+        typeof args?.summary === "string" ? args.summary.trim() || undefined : undefined;
       // Always fire the picker, not just inside plan mode. Plan mode's
       // role is the *stronger* constraint — it forces you into read-only
       // until you submit. Outside plan mode, submit_plan is your own
@@ -286,7 +297,7 @@ export function registerPlanTool(registry: ToolRegistry, opts: PlanToolOptions =
       // gate (multi-file refactors, architecture changes, anything
       // that would be expensive to undo), skip it for small fixes.
       opts.onPlanSubmitted?.(plan, steps);
-      throw new PlanProposedError(plan, steps);
+      throw new PlanProposedError(plan, steps, summary);
     },
   });
   registry.register({

@@ -83,6 +83,8 @@ export interface DisplayEvent {
     steps: PlanStep[];
     completedStepIds: string[];
     relativeTime: string;
+    /** Optional human-friendly title; rendered in the banner header when set. */
+    summary?: string;
   };
   /**
    * Render a thin horizontal rule above this event. Used to mark
@@ -297,11 +299,18 @@ export const EventRow = React.memo(function EventRow({
     const nextStep = rp.steps.find((s) => !completedSet.has(s.id));
     return (
       <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
-        <Box>
-          <Text bold color="cyan">
-            ▸ resumed plan
-          </Text>
-          <Text dimColor>{`  ${done}/${total} done · last touched ${rp.relativeTime}`}</Text>
+        <Box flexDirection="column">
+          <Box>
+            <Text bold color="cyan">
+              ▸ resumed plan
+            </Text>
+            <Text dimColor>{`  ${done}/${total} done · last touched ${rp.relativeTime}`}</Text>
+          </Box>
+          {rp.summary ? (
+            <Box>
+              <Text color="cyan">{`  ${rp.summary}`}</Text>
+            </Box>
+          ) : null}
         </Box>
         <Box marginTop={1} flexDirection="column">
           <PlanStepList steps={rp.steps} statuses={statuses} focusStepId={nextStep?.id} />

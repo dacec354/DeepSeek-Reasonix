@@ -198,6 +198,28 @@ describe("registerPlanTool + submit_plan", () => {
     expect(JSON.parse(out).plan).toBe("trimmed");
   });
 
+  it("carries an optional summary through toToolResult", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    reg.setPlanMode(true);
+    const out = await reg.dispatch(
+      "submit_plan",
+      JSON.stringify({ plan: "# Plan", summary: "Refactor auth into signed tokens" }),
+    );
+    expect(JSON.parse(out).summary).toBe("Refactor auth into signed tokens");
+  });
+
+  it("omits summary when blank / whitespace-only", async () => {
+    const reg = new ToolRegistry();
+    registerPlanTool(reg);
+    reg.setPlanMode(true);
+    const out = await reg.dispatch(
+      "submit_plan",
+      JSON.stringify({ plan: "# Plan", summary: "   " }),
+    );
+    expect(JSON.parse(out).summary).toBeUndefined();
+  });
+
   it("accepts an optional steps array and surfaces it in the tool result", async () => {
     const reg = new ToolRegistry();
     const submitted: Array<{ plan: string; steps?: unknown }> = [];

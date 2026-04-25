@@ -23,8 +23,9 @@ const plans: SlashHandler = (_args, loop) => {
     const total = active.steps.length;
     const done = active.completedStepIds.length;
     const when = relativeTime(active.updatedAt);
+    const label = active.summary ? `: ${active.summary}` : "";
     lines.push(
-      `▸ active plan: ${done}/${total} step${total === 1 ? "" : "s"} done · last touched ${when}`,
+      `▸ active plan${label} — ${done}/${total} step${total === 1 ? "" : "s"} done · last touched ${when}`,
     );
   } else {
     lines.push("▸ active plan: (none)");
@@ -46,10 +47,12 @@ const plans: SlashHandler = (_args, loop) => {
     const total = a.steps.length;
     const done = a.completedStepIds.length;
     const completion = done >= total ? "complete" : `${done}/${total}`;
-    // Filename minus path for compactness.
-    const file = a.path.split(/[\\/]/).pop() ?? a.path;
+    // Prefer the model-supplied summary as the label; fall back to
+    // the bare filename so legacy archives without a summary still
+    // show something identifying.
+    const label = a.summary ?? a.path.split(/[\\/]/).pop() ?? a.path;
     lines.push(
-      `  ✓ ${when.padEnd(10)}  ${total} step${total === 1 ? "" : "s"} · ${completion}  ${file}`,
+      `  ✓ ${when.padEnd(10)}  ${total} step${total === 1 ? "" : "s"} · ${completion}  ${label}`,
     );
   }
   return { info: lines.join("\n") };

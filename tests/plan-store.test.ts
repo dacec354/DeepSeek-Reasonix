@@ -66,6 +66,23 @@ describe("plan-store roundtrip", () => {
     expect(typeof loaded?.updatedAt).toBe("string");
   });
 
+  it("round-trips optional body + summary when supplied", () => {
+    savePlanState("with-extras", [{ id: "x", title: "y", action: "z" }], [], {
+      body: "# Plan\n- do thing",
+      summary: "Refactor foo into bar",
+    });
+    const loaded = loadPlanState("with-extras");
+    expect(loaded?.body).toBe("# Plan\n- do thing");
+    expect(loaded?.summary).toBe("Refactor foo into bar");
+  });
+
+  it("omits body / summary when not supplied (keeps older plans clean)", () => {
+    savePlanState("no-extras", [{ id: "x", title: "y", action: "z" }], []);
+    const loaded = loadPlanState("no-extras");
+    expect(loaded?.body).toBeUndefined();
+    expect(loaded?.summary).toBeUndefined();
+  });
+
   it("clearPlanState removes the file", () => {
     savePlanState("test", [{ id: "x", title: "y", action: "z" }], []);
     expect(loadPlanState("test")).not.toBeNull();

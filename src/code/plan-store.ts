@@ -44,6 +44,18 @@ export interface PlanStateOnDisk {
   completedStepIds: string[];
   /** ISO8601 timestamp of the last write. */
   updatedAt: string;
+  /**
+   * Markdown body the model submitted via submit_plan. Persisted so
+   * Time Travel replay can show the full proposal without going back
+   * to the JSONL log. Optional — older / minimal plans may lack it.
+   */
+  body?: string;
+  /**
+   * Optional one-sentence human-friendly title. Surfaces in the
+   * PlanConfirm header, the resume banner, and /plans listings so
+   * the user identifies plans by intent rather than file path.
+   */
+  summary?: string;
 }
 
 export function planStatePath(sessionName: string): string {
@@ -83,7 +95,15 @@ export function loadPlanState(sessionName: string): PlanStateOnDisk | null {
     const completedStepIds = parsed.completedStepIds.filter(
       (id): id is string => typeof id === "string" && id.length > 0,
     );
-    return { version: 1, steps, completedStepIds, updatedAt: parsed.updatedAt };
+    const out: PlanStateOnDisk = {
+      version: 1,
+      steps,
+      completedStepIds,
+      updatedAt: parsed.updatedAt,
+    };
+    if (typeof parsed.body === "string" && parsed.body) out.body = parsed.body;
+    if (typeof parsed.summary === "string" && parsed.summary) out.summary = parsed.summary;
+    return out;
   } catch {
     return null;
   }
@@ -99,6 +119,7 @@ export function savePlanState(
   sessionName: string,
   steps: PlanStep[],
   completedStepIds: Iterable<string>,
+  extras?: { body?: string; summary?: string },
 ): void {
   const path = planStatePath(sessionName);
   try {
@@ -109,6 +130,8 @@ export function savePlanState(
       completedStepIds: [...completedStepIds],
       updatedAt: new Date().toISOString(),
     };
+    if (extras?.body) state.body = extras.body;
+    if (extras?.summary) state.summary = extras.summary;
     writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   } catch (err) {
     process.stderr.write(
@@ -176,6 +199,10 @@ export interface PlanArchiveSummary {
   completedAt: string;
   steps: PlanStep[];
   completedStepIds: string[];
+  /** Markdown body, when the archive carried it. */
+  body?: string;
+  /** One-line human-friendly title, when supplied. */
+  summary?: string;
 }
 
 /**
@@ -231,7 +258,10 @@ export function listPlanArchives(sessionName: string): PlanArchiveSummary[] {
           completedAt = new Date(0).toISOString();
         }
       }
-      summaries.push({ path: full, completedAt, steps, completedStepIds });
+      const entry: PlanArchiveSummary = { path: full, completedAt, steps, completedStepIds };
+      if (typeof parsed.body === "string" && parsed.body) entry.body = parsed.body;
+      if (typeof parsed.summary === "string" && parsed.summary) entry.summary = parsed.summary;
+      summaries.push(entry);
     } catch {
       // Skip the corrupt archive entirely.
     }
