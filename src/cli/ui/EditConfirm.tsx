@@ -1,8 +1,8 @@
-import { Box, Text, useInput, useStdout } from "ink";
+import { Box, Text, useStdout } from "ink";
 import React, { useMemo, useState } from "react";
 import { formatEditBlockDiff } from "../../code/diff-preview.js";
 import type { EditBlock } from "../../code/edit-blocks.js";
-import { recoverCsiTail } from "./key-normalize.js";
+import { useKeystroke } from "./keystroke-context.js";
 
 /**
  * Choice surfaced to the interceptor when the user resolves the modal:
@@ -74,10 +74,10 @@ export function EditConfirm({ block, onChoose }: EditConfirmProps) {
   // keypress drove the offset past the new ceiling.
   const effectiveScroll = Math.min(scroll, maxScroll);
 
-  useInput((rawInput, rawKey) => {
-    const recovered = recoverCsiTail(rawInput, rawKey);
-    const input = recovered ? "" : rawInput;
-    const key = recovered ? { ...rawKey, ...recovered } : rawKey;
+  useKeystroke((ev) => {
+    if (ev.paste) return;
+    const input = ev.input;
+    const key = ev;
     // Action keys first — decision wins over scroll so a user who
     // hammered PgDn can still hit `y` at the end without a stray
     // extra scroll.

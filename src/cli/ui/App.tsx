@@ -1,5 +1,5 @@
 import type { WriteStream } from "node:fs";
-import { Box, Static, useApp, useInput, useStdout } from "ink";
+import { Box, Static, useApp, useStdout } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { expandAtMentions } from "../../at-mentions.js";
 import {
@@ -57,7 +57,7 @@ import { SlashSuggestions } from "./SlashSuggestions.js";
 import { StatsPanel } from "./StatsPanel.js";
 import { detectBangCommand, formatBangUserMessage } from "./bang.js";
 import { describeRepair, formatEditResults, formatPendingPreview } from "./edit-history.js";
-import { recoverCsiTail } from "./key-normalize.js";
+import { KeystrokeProvider, useKeystroke } from "./keystroke-context.js";
 import { handleMcpBrowseSlash } from "./mcp-browse.js";
 import { formatLongPaste } from "./paste-collapse.js";
 import { type McpServerSummary, handleSlash, parseSlash, suggestSlashCommands } from "./slash.js";
@@ -708,15 +708,19 @@ export function App({
   // Also handles ↑/↓ shell-style history while idle. We don't use
   // ink-text-input's (absent) history support; parent-level useInput
   // is simpler and lets us own the cursor semantics.
-  useInput((rawInput, rawKey) => {
-    // CSI recovery — same boundary that PromptInput uses. On Windows
-    // ConPTY, `\x1b[Z` (Shift+Tab) and `[A`-style arrow tails arrive
-    // with the leading ESC eaten; without recovery the structured
-    // flags Ink populates would miss them and the global hotkey
-    // bindings below would silently ignore the keystroke.
-    const recovered = recoverCsiTail(rawInput, rawKey);
-    const chKey = recovered ? "" : rawInput;
-    const key = recovered ? { ...rawKey, ...recovered } : rawKey;
+  useKeystroke((ev) => {
+    // PromptInput consumes its own keystrokes via useKeystroke too,
+    // so events fan out to both this handler and PromptInput's. The
+    // global hotkeys here only fire when the relevant condition
+    // (busy / codeMode / etc.) holds, otherwise they no-op and let
+    // PromptInput own the key.
+    const chKey = ev.input;
+    const key = ev;
+    if (ev.paste) {
+      // Paste content goes only to PromptInput. Don't run global
+      // hotkey logic over it (a `\n` in paste shouldn't fire submit).
+      return;
+    }
     if (key.escape && busy) {
       if (abortedThisTurn.current) return;
       abortedThisTurn.current = true;
@@ -2511,102 +2515,103 @@ export function App({
   );
 
   return (
-    <TickerProvider
-      disabled={
-        PLAIN_UI ||
-        !!pendingPlan ||
-        !!pendingShell ||
-        !!pendingEditReview ||
-        !!pendingCheckpoint ||
-        !!stagedCheckpointRevise ||
-        !!pendingChoice ||
-        !!stagedChoiceCustom ||
-        !!pendingRevision
-      }
-    >
-      <Box flexDirection="column">
-        <StatsPanel
-          summary={summary}
-          model={loop.model}
-          prefixHash={prefixHash}
-          harvestOn={loop.harvestEnabled}
-          branchBudget={loop.branchOptions.budget}
-          reasoningEffort={loop.reasoningEffort}
-          planMode={planMode}
-          editMode={codeMode ? editMode : undefined}
-          balance={balance}
-          busy={busy}
-          updateAvailable={updateAvailable}
-          proArmed={proArmed}
-          escalated={turnOnPro}
-        />
-        <Static items={historical}>
-          {(item) => <EventRow key={item.id} event={item} projectRoot={hookCwd} />}
-        </Static>
-        {/*
+    <KeystrokeProvider>
+      <TickerProvider
+        disabled={
+          PLAIN_UI ||
+          !!pendingPlan ||
+          !!pendingShell ||
+          !!pendingEditReview ||
+          !!pendingCheckpoint ||
+          !!stagedCheckpointRevise ||
+          !!pendingChoice ||
+          !!stagedChoiceCustom ||
+          !!pendingRevision
+        }
+      >
+        <Box flexDirection="column">
+          <StatsPanel
+            summary={summary}
+            model={loop.model}
+            prefixHash={prefixHash}
+            harvestOn={loop.harvestEnabled}
+            branchBudget={loop.branchOptions.budget}
+            reasoningEffort={loop.reasoningEffort}
+            planMode={planMode}
+            editMode={codeMode ? editMode : undefined}
+            balance={balance}
+            busy={busy}
+            updateAvailable={updateAvailable}
+            proArmed={proArmed}
+            escalated={turnOnPro}
+          />
+          <Static items={historical}>
+            {(item) => <EventRow key={item.id} event={item} projectRoot={hookCwd} />}
+          </Static>
+          {/*
           Live rows are hidden while the ShellConfirm modal is up — the
           model's concurrent "please confirm" stream is noise the user
           doesn't need, and the picker shouldn't fight it for visual
           attention. They come back naturally once the user chooses and
           the next turn begins.
         */}
-        {!PLAIN_UI &&
-        !pendingShell &&
-        !pendingPlan &&
-        !stagedInput &&
-        !pendingEditReview &&
-        !pendingCheckpoint &&
-        !stagedCheckpointRevise &&
-        streaming ? (
-          <Box marginY={1}>
-            <EventRow event={streaming} projectRoot={hookCwd} />
-          </Box>
-        ) : null}
-        {!PLAIN_UI &&
-        !pendingShell &&
-        !pendingPlan &&
-        !stagedInput &&
-        !pendingEditReview &&
-        !pendingCheckpoint &&
-        !stagedCheckpointRevise &&
-        ongoingTool ? (
-          <OngoingToolRow tool={ongoingTool} progress={toolProgress} />
-        ) : null}
-        {!PLAIN_UI &&
-        !pendingShell &&
-        !pendingPlan &&
-        !stagedInput &&
-        !pendingEditReview &&
-        !pendingCheckpoint &&
-        !stagedCheckpointRevise &&
-        subagentActivity ? (
-          <SubagentRow activity={subagentActivity} />
-        ) : null}
-        {!PLAIN_UI &&
-        !pendingShell &&
-        !pendingPlan &&
-        !stagedInput &&
-        !pendingEditReview &&
-        !pendingCheckpoint &&
-        !stagedCheckpointRevise &&
-        !ongoingTool &&
-        statusLine ? (
-          <StatusRow text={statusLine} />
-        ) : null}
-        {!PLAIN_UI &&
-        undoBanner &&
-        !pendingShell &&
-        !pendingPlan &&
-        !stagedInput &&
-        !pendingEditReview &&
-        !pendingCheckpoint &&
-        !stagedCheckpointRevise &&
-        !pendingChoice &&
-        !stagedChoiceCustom &&
-        !pendingRevision ? (
-          <UndoBanner banner={undoBanner} />
-        ) : null}
-        {/*
+          {!PLAIN_UI &&
+          !pendingShell &&
+          !pendingPlan &&
+          !stagedInput &&
+          !pendingEditReview &&
+          !pendingCheckpoint &&
+          !stagedCheckpointRevise &&
+          streaming ? (
+            <Box marginY={1}>
+              <EventRow event={streaming} projectRoot={hookCwd} />
+            </Box>
+          ) : null}
+          {!PLAIN_UI &&
+          !pendingShell &&
+          !pendingPlan &&
+          !stagedInput &&
+          !pendingEditReview &&
+          !pendingCheckpoint &&
+          !stagedCheckpointRevise &&
+          ongoingTool ? (
+            <OngoingToolRow tool={ongoingTool} progress={toolProgress} />
+          ) : null}
+          {!PLAIN_UI &&
+          !pendingShell &&
+          !pendingPlan &&
+          !stagedInput &&
+          !pendingEditReview &&
+          !pendingCheckpoint &&
+          !stagedCheckpointRevise &&
+          subagentActivity ? (
+            <SubagentRow activity={subagentActivity} />
+          ) : null}
+          {!PLAIN_UI &&
+          !pendingShell &&
+          !pendingPlan &&
+          !stagedInput &&
+          !pendingEditReview &&
+          !pendingCheckpoint &&
+          !stagedCheckpointRevise &&
+          !ongoingTool &&
+          statusLine ? (
+            <StatusRow text={statusLine} />
+          ) : null}
+          {!PLAIN_UI &&
+          undoBanner &&
+          !pendingShell &&
+          !pendingPlan &&
+          !stagedInput &&
+          !pendingEditReview &&
+          !pendingCheckpoint &&
+          !stagedCheckpointRevise &&
+          !pendingChoice &&
+          !stagedChoiceCustom &&
+          !pendingRevision ? (
+            <UndoBanner banner={undoBanner} />
+          ) : null}
+          {/*
           Belt-and-suspenders fallback: if we're busy but NONE of the
           specific indicators (streaming, ongoingTool, statusLine) is
           visible, something is still happening — show a generic
@@ -2614,128 +2619,129 @@ export function App({
           without a label. Catches micro-gaps between events that the
           targeted status lines don't cover.
         */}
-        {!PLAIN_UI &&
-        !pendingShell &&
-        !pendingPlan &&
-        !stagedInput &&
-        !pendingEditReview &&
-        !pendingCheckpoint &&
-        !stagedCheckpointRevise &&
-        busy &&
-        !streaming &&
-        !ongoingTool &&
-        !statusLine ? (
-          <StatusRow text="processing…" />
-        ) : null}
-        {stagedInput ? (
-          <PlanRefineInput
-            mode={stagedInput.mode}
-            onSubmit={handleStagedInputSubmit}
-            onCancel={handleStagedInputCancel}
-          />
-        ) : stagedCheckpointRevise ? (
-          <PlanRefineInput
-            mode="checkpoint-revise"
-            onSubmit={handleCheckpointReviseSubmit}
-            onCancel={handleCheckpointReviseCancel}
-          />
-        ) : stagedChoiceCustom ? (
-          <PlanRefineInput
-            mode="choice-custom"
-            onSubmit={handleChoiceCustomSubmit}
-            onCancel={handleChoiceCustomCancel}
-          />
-        ) : pendingChoice ? (
-          <ChoiceConfirm
-            question={pendingChoice.question}
-            options={pendingChoice.options}
-            allowCustom={pendingChoice.allowCustom}
-            onChoose={stableHandleChoiceConfirm}
-          />
-        ) : pendingRevision ? (
-          <PlanReviseConfirm
-            reason={pendingRevision.reason}
-            oldRemaining={(planStepsRef.current ?? []).filter(
-              (s) => !completedStepIdsRef.current.has(s.id),
-            )}
-            newRemaining={pendingRevision.remainingSteps}
-            summary={pendingRevision.summary}
-            onChoose={stableHandleReviseConfirm}
-          />
-        ) : pendingCheckpoint ? (
-          <PlanCheckpointConfirm
-            stepId={pendingCheckpoint.stepId}
-            title={pendingCheckpoint.title}
-            completed={pendingCheckpoint.completed}
-            total={pendingCheckpoint.total}
-            steps={planStepsRef.current ?? undefined}
-            completedStepIds={completedStepIdsRef.current}
-            onChoose={stableHandleCheckpointConfirm}
-          />
-        ) : pendingPlan ? (
-          <PlanConfirm
-            plan={pendingPlan}
-            steps={planStepsRef.current ?? undefined}
-            summary={planSummaryRef.current ?? undefined}
-            onChoose={stableHandlePlanConfirm}
-            projectRoot={hookCwd}
-          />
-        ) : pendingShell ? (
-          <ShellConfirm
-            command={pendingShell.command}
-            allowPrefix={derivePrefix(pendingShell.command)}
-            kind={pendingShell.kind}
-            onChoose={handleShellConfirm}
-          />
-        ) : pendingEditReview ? (
-          <EditConfirm
-            block={pendingEditReview}
-            onChoose={(choice) => {
-              const resolve = editReviewResolveRef.current;
-              if (resolve) {
-                editReviewResolveRef.current = null;
-                resolve(choice);
-              }
-            }}
-          />
-        ) : (
-          <>
-            {codeMode ? (
-              <ModeStatusBar
-                editMode={editMode}
-                pendingCount={pendingCount}
-                flash={modeFlash}
-                planMode={planMode}
-                undoArmed={!!undoBanner || hasUndoable()}
-                jobs={codeMode.jobs}
-              />
-            ) : null}
-            <PromptInput
-              value={input}
-              onChange={setInput}
-              onSubmit={handleSubmit}
-              disabled={busy}
-              onHistoryPrev={recallPrev}
-              onHistoryNext={recallNext}
+          {!PLAIN_UI &&
+          !pendingShell &&
+          !pendingPlan &&
+          !stagedInput &&
+          !pendingEditReview &&
+          !pendingCheckpoint &&
+          !stagedCheckpointRevise &&
+          busy &&
+          !streaming &&
+          !ongoingTool &&
+          !statusLine ? (
+            <StatusRow text="processing…" />
+          ) : null}
+          {stagedInput ? (
+            <PlanRefineInput
+              mode={stagedInput.mode}
+              onSubmit={handleStagedInputSubmit}
+              onCancel={handleStagedInputCancel}
             />
-            <SlashSuggestions matches={slashMatches} selectedIndex={slashSelected} />
-            <AtMentionSuggestions
-              matches={atMatches}
-              selectedIndex={atSelected}
-              query={atPicker?.query ?? ""}
+          ) : stagedCheckpointRevise ? (
+            <PlanRefineInput
+              mode="checkpoint-revise"
+              onSubmit={handleCheckpointReviseSubmit}
+              onCancel={handleCheckpointReviseCancel}
             />
-            {slashArgContext ? (
-              <SlashArgPicker
-                matches={slashArgMatches}
-                selectedIndex={slashArgSelected}
-                spec={slashArgContext.spec}
-                kind={slashArgContext.kind}
-                partial={slashArgContext.partial}
+          ) : stagedChoiceCustom ? (
+            <PlanRefineInput
+              mode="choice-custom"
+              onSubmit={handleChoiceCustomSubmit}
+              onCancel={handleChoiceCustomCancel}
+            />
+          ) : pendingChoice ? (
+            <ChoiceConfirm
+              question={pendingChoice.question}
+              options={pendingChoice.options}
+              allowCustom={pendingChoice.allowCustom}
+              onChoose={stableHandleChoiceConfirm}
+            />
+          ) : pendingRevision ? (
+            <PlanReviseConfirm
+              reason={pendingRevision.reason}
+              oldRemaining={(planStepsRef.current ?? []).filter(
+                (s) => !completedStepIdsRef.current.has(s.id),
+              )}
+              newRemaining={pendingRevision.remainingSteps}
+              summary={pendingRevision.summary}
+              onChoose={stableHandleReviseConfirm}
+            />
+          ) : pendingCheckpoint ? (
+            <PlanCheckpointConfirm
+              stepId={pendingCheckpoint.stepId}
+              title={pendingCheckpoint.title}
+              completed={pendingCheckpoint.completed}
+              total={pendingCheckpoint.total}
+              steps={planStepsRef.current ?? undefined}
+              completedStepIds={completedStepIdsRef.current}
+              onChoose={stableHandleCheckpointConfirm}
+            />
+          ) : pendingPlan ? (
+            <PlanConfirm
+              plan={pendingPlan}
+              steps={planStepsRef.current ?? undefined}
+              summary={planSummaryRef.current ?? undefined}
+              onChoose={stableHandlePlanConfirm}
+              projectRoot={hookCwd}
+            />
+          ) : pendingShell ? (
+            <ShellConfirm
+              command={pendingShell.command}
+              allowPrefix={derivePrefix(pendingShell.command)}
+              kind={pendingShell.kind}
+              onChoose={handleShellConfirm}
+            />
+          ) : pendingEditReview ? (
+            <EditConfirm
+              block={pendingEditReview}
+              onChoose={(choice) => {
+                const resolve = editReviewResolveRef.current;
+                if (resolve) {
+                  editReviewResolveRef.current = null;
+                  resolve(choice);
+                }
+              }}
+            />
+          ) : (
+            <>
+              {codeMode ? (
+                <ModeStatusBar
+                  editMode={editMode}
+                  pendingCount={pendingCount}
+                  flash={modeFlash}
+                  planMode={planMode}
+                  undoArmed={!!undoBanner || hasUndoable()}
+                  jobs={codeMode.jobs}
+                />
+              ) : null}
+              <PromptInput
+                value={input}
+                onChange={setInput}
+                onSubmit={handleSubmit}
+                disabled={busy}
+                onHistoryPrev={recallPrev}
+                onHistoryNext={recallNext}
               />
-            ) : null}
-          </>
-        )}
-      </Box>
-    </TickerProvider>
+              <SlashSuggestions matches={slashMatches} selectedIndex={slashSelected} />
+              <AtMentionSuggestions
+                matches={atMatches}
+                selectedIndex={atSelected}
+                query={atPicker?.query ?? ""}
+              />
+              {slashArgContext ? (
+                <SlashArgPicker
+                  matches={slashArgMatches}
+                  selectedIndex={slashArgSelected}
+                  spec={slashArgContext.spec}
+                  kind={slashArgContext.kind}
+                  partial={slashArgContext.partial}
+                />
+              ) : null}
+            </>
+          )}
+        </Box>
+      </TickerProvider>
+    </KeystrokeProvider>
   );
 }

@@ -9,9 +9,9 @@
  * rendering quirk bundled (`ink-text-input`); adding more is low value.
  */
 
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 import React, { useState } from "react";
-import { recoverCsiTail } from "./key-normalize.js";
+import { useKeystroke } from "./keystroke-context.js";
 
 export interface SelectItem<V extends string = string> {
   /** Stable identifier — returned to caller on submit. */
@@ -51,17 +51,16 @@ export function SingleSelect<V extends string>({
   );
   const [index, setIndex] = useState(initialIndex === -1 ? 0 : initialIndex);
 
-  useInput((rawInput, rawKey) => {
-    const recovered = recoverCsiTail(rawInput, rawKey);
-    const key = recovered ? { ...rawKey, ...recovered } : rawKey;
-    if (key.upArrow) {
+  useKeystroke((ev) => {
+    if (ev.paste) return;
+    if (ev.upArrow) {
       setIndex((i) => findNextEnabled(items, i, -1));
-    } else if (key.downArrow) {
+    } else if (ev.downArrow) {
       setIndex((i) => findNextEnabled(items, i, +1));
-    } else if (key.return) {
+    } else if (ev.return) {
       const chosen = items[index];
       if (chosen && !chosen.disabled) onSubmit(chosen.value);
-    } else if (key.escape && onCancel) {
+    } else if (ev.escape && onCancel) {
       onCancel();
     }
   });
@@ -107,15 +106,13 @@ export function MultiSelect<V extends string>({
   });
   const [selected, setSelected] = useState<Set<V>>(new Set(initialSelected));
 
-  useInput((rawInput, rawKey) => {
-    const recovered = recoverCsiTail(rawInput, rawKey);
-    const input = recovered ? "" : rawInput;
-    const key = recovered ? { ...rawKey, ...recovered } : rawKey;
-    if (key.upArrow) {
+  useKeystroke((ev) => {
+    if (ev.paste) return;
+    if (ev.upArrow) {
       setIndex((i) => findNextEnabled(items, i, -1));
-    } else if (key.downArrow) {
+    } else if (ev.downArrow) {
       setIndex((i) => findNextEnabled(items, i, +1));
-    } else if (input === " ") {
+    } else if (ev.input === " ") {
       const item = items[index];
       if (!item || item.disabled) return;
       setSelected((prev) => {
@@ -124,13 +121,13 @@ export function MultiSelect<V extends string>({
         else next.add(item.value);
         return next;
       });
-    } else if (key.return) {
+    } else if (ev.return) {
       // Preserve catalog order rather than insertion order, so reruns
       // produce the same spec list for the same checkbox set — makes the
       // `config.json` diff trivially stable.
       const ordered = items.filter((i) => selected.has(i.value)).map((i) => i.value);
       onSubmit(ordered);
-    } else if (key.escape && onCancel) {
+    } else if (ev.escape && onCancel) {
       onCancel();
     }
   });

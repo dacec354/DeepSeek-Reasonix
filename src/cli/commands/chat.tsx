@@ -21,6 +21,7 @@ import { registerWebTools } from "../../tools/web.js";
 import { App } from "../ui/App.js";
 import { SessionPicker } from "../ui/SessionPicker.js";
 import { Setup } from "../ui/Setup.js";
+import { KeystrokeProvider } from "../ui/keystroke-context.js";
 import type { McpServerSummary } from "../ui/slash.js";
 
 export interface ProgressInfo {
@@ -104,20 +105,26 @@ function Root({
 
   if (pending && appProps.session) {
     return (
-      <SessionPicker
-        sessionName={appProps.session}
-        messageCount={pending.messageCount}
-        lastActive={pending.lastActive}
-        onChoose={(choice) => {
-          if (choice === "new" || choice === "delete") {
-            // Wipe the session file. "new" and "delete" do the same thing
-            // at this step — the distinction is only in the picker's
-            // wording. A future enhancement could archive on "new".
-            rewriteSession(appProps.session!, []);
-          }
-          setPending(undefined);
-        }}
-      />
+      // SessionPicker uses our SingleSelect, which subscribes via
+      // useKeystroke — that needs a KeystrokeProvider above it.
+      // App has its own provider; the picker phase needs a separate
+      // wrapper so the singleton reader gets started/subscribed.
+      <KeystrokeProvider>
+        <SessionPicker
+          sessionName={appProps.session}
+          messageCount={pending.messageCount}
+          lastActive={pending.lastActive}
+          onChoose={(choice) => {
+            if (choice === "new" || choice === "delete") {
+              // Wipe the session file. "new" and "delete" do the same thing
+              // at this step — the distinction is only in the picker's
+              // wording. A future enhancement could archive on "new".
+              rewriteSession(appProps.session!, []);
+            }
+            setPending(undefined);
+          }}
+        />
+      </KeystrokeProvider>
     );
   }
 

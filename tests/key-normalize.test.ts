@@ -7,8 +7,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  recoverCsiTail,
   STRIPPABLE_CSI_FRAGMENTS,
+  recoverCsiTail,
   stripCsiFragments,
 } from "../src/cli/ui/key-normalize.js";
 

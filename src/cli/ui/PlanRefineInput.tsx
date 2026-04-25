@@ -14,8 +14,9 @@
  * the picker without resuming.
  */
 
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 import React, { useState } from "react";
+import { useKeystroke } from "./keystroke-context.js";
 
 export interface PlanRefineInputProps {
   /**
@@ -37,22 +38,28 @@ export interface PlanRefineInputProps {
 export function PlanRefineInput({ mode, onSubmit, onCancel }: PlanRefineInputProps) {
   const [value, setValue] = useState("");
 
-  useInput((input, key) => {
-    if (key.escape) {
+  useKeystroke((ev) => {
+    if (ev.paste) {
+      // Insert paste content as-is. Multi-line pastes flatten via
+      // newlines becoming spaces because this is a single-line input.
+      setValue((v) => v + ev.input.replace(/\r?\n/g, " "));
+      return;
+    }
+    if (ev.escape) {
       onCancel();
       return;
     }
-    if (key.return) {
+    if (ev.return) {
       onSubmit(value.trim());
       return;
     }
-    if (key.backspace || key.delete) {
+    if (ev.backspace || ev.delete) {
       setValue((v) => v.slice(0, -1));
       return;
     }
     // Filter out non-printable chars; accept ordinary text + CJK.
-    if (input && !key.ctrl && !key.meta) {
-      setValue((v) => v + input);
+    if (ev.input && !ev.ctrl && !ev.meta) {
+      setValue((v) => v + ev.input);
     }
   });
 

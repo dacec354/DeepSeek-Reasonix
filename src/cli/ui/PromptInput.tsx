@@ -1,63 +1,39 @@
-import { Box, Text, useInput, useStdout } from "ink";
+import { Box, Text, useStdout } from "ink";
 // biome-ignore lint/style/useImportType: tsconfig jsx=react needs React as a runtime value (classic transform compiles JSX to React.createElement)
 import React, { useRef, useState } from "react";
+import { useKeystroke } from "./keystroke-context.js";
 import { type MultilineKey, lineAndColumn, processMultilineKey } from "./multiline-keys.js";
 import {
   PASTE_SENTINEL_RANGE,
   type PasteEntry,
-  decodePasteSentinel,
   encodePasteSentinel,
   expandPasteSentinels,
-  formatBytesShort,
   listPasteIdsInBuffer,
   makePasteEntry,
 } from "./paste-sentinels.js";
-import { useTick } from "./ticker.js";
+import { type Segment, buildViewport, stringCells } from "./prompt-viewport.js";
 
 /**
- * DECSET 2004 (bracketed paste) markers. The terminal sends these
- * around every paste action when bracketed-paste mode is enabled
- * (App.tsx writes the enable sequence at mount). Surface as exact
- * literal byte strings so we can locate them in `input` regardless
- * of how stdin chunks the surrounding bytes.
+ * Prompt input v2 — no Ink useInput, no Yoga text wrapping, no
+ * cursor blink. Replaces the bordered-Box / multi-Text approach
+ * that was driving the Windows ghost-row regressions.
  *
- * The fallback variants without the leading `\x1b` cover terminals
- * (Windows PowerShell + ConPTY + Ink, in particular) where Ink's
- * `parse-keypress` consumes the ESC byte but routes the remaining
- * `[200~` / `[201~` into the next `useInput` event as plain text.
- * Without these fallbacks the literal `[201~` ends up inserted into
- * the user's prompt buffer.
+ * Pipeline:
+ *   - Subscribes to the global keystroke bus (which is fed by our
+ *     own raw stdin parser, NOT Ink's parse-keypress).
+ *   - Pure events: `paste` events go to the paste registry; everything
+ *     else flows through `processMultilineKey` (the existing reducer
+ *     with all the cursor / submit / history-recall semantics).
+ *   - Render: one logical line per <Box> row. Each row renders as
+ *     EXACTLY one visual row — content longer than the visible cell
+ *     budget is clipped via `buildViewport`, with `‹` / `›` markers
+ *     where content is hidden. The cursor moves the viewport so it
+ *     stays visible.
+ *
+ * The cursor is a static `▌` block — no blink. Blinking required a
+ * 120ms ticker that re-rendered the whole tree, which on fragile
+ * terminals interacted badly with Ink's eraseLines miscount.
  */
-const PASTE_START_MARKER = "\u001b[200~";
-const PASTE_END_MARKER = "\u001b[201~";
-const PASTE_START_FALLBACK = "[200~";
-const PASTE_END_FALLBACK = "[201~";
-
-function findPasteStart(input: string): { idx: number; len: number } | null {
-  const a = input.indexOf(PASTE_START_MARKER);
-  if (a !== -1) return { idx: a, len: PASTE_START_MARKER.length };
-  const b = input.indexOf(PASTE_START_FALLBACK);
-  if (b !== -1) return { idx: b, len: PASTE_START_FALLBACK.length };
-  return null;
-}
-
-function findPasteEnd(input: string): { idx: number; len: number } | null {
-  const a = input.indexOf(PASTE_END_MARKER);
-  if (a !== -1) return { idx: a, len: PASTE_END_MARKER.length };
-  const b = input.indexOf(PASTE_END_FALLBACK);
-  if (b !== -1) return { idx: b, len: PASTE_END_FALLBACK.length };
-  return null;
-}
-/**
- * Merge-fallback window for terminals that strip bracketed-paste
- * markers (Windows PowerShell + ConPTY + Ink eats `\x1b[200~`).
- * One Ctrl+V arrives as N chunks 1-5ms apart; we collapse them by
- * checking arrival time + that the previous sentinel is still at
- * cursor-1 (no typing happened). 30ms is well below the ~100ms
- * minimum a human can release+repress Ctrl+V, so deliberate
- * back-to-back pastes never falsely merge.
- */
-const PASTE_MERGE_WINDOW_MS = 30;
 
 export interface PromptInputProps {
   value: string;
@@ -75,18 +51,6 @@ export interface PromptInputProps {
   onHistoryNext?: () => void;
 }
 
-/**
- * Input box with real cursor support. ←/→ move one column, ↑/↓ move
- * across lines in multi-line buffers, Ctrl+A / Ctrl+E jump to
- * start/end of the current line. Backspace deletes before cursor,
- * Delete deletes under cursor. Multi-line composition via Ctrl+J,
- * Shift+Enter, or bash-style `\<Enter>`.
- *
- * Cursor state lives locally. When the parent replaces `value` out
- * of band (history recall, slash completion, setup wizard) the
- * cursor jumps to end; the `lastLocalValueRef` guards distinguishes
- * that case from our own edits.
- */
 export function PromptInput({
   value,
   onChange,
@@ -97,220 +61,105 @@ export function PromptInput({
   onHistoryNext,
 }: PromptInputProps) {
   const [cursor, setCursor] = useState(value.length);
-  // Paste registry. Maps sentinel id → original paste content. Each
-  // entry is keyed by the codepoint stored in the buffer string.
-  // Lives in a ref because rendering doesn't depend on identity —
-  // mutating the map in-place is fine, the per-keystroke render
-  // reads the current state directly. `nextPasteIdRef` wraps modulo
-  // PASTE_SENTINEL_RANGE; collisions are rare in practice (256 slots,
-  // typical session has <10 pastes).
+
+  // Paste registry — keyed by sentinel id, holds original content.
   const pastesRef = useRef<Map<number, PasteEntry>>(new Map());
   const nextPasteIdRef = useRef<number>(0);
-  // Bracketed-paste accumulator. When a paste begins, the terminal
-  // sends `\x1b[200~`; when it ends, `\x1b[201~`. We accumulate
-  // everything between markers into ONE entry. Works on terminals
-  // that pass markers through to Ink intact (iTerm, kitty, alacritty,
-  // most modern terminals on macOS/Linux). Doesn't work on Windows
-  // PowerShell+ConPTY where Ink's parse-keypress eats the markers
-  // before we see them — fallback below covers that case.
-  // null = not currently inside a paste; string = accumulating.
-  const pasteAccumRef = useRef<string | null>(null);
-  // Tight time-window merge fallback. When bracketed-paste markers
-  // don't reach us (Ink ate them, terminal didn't send them, etc.),
-  // a single user paste arrives as N stdin chunks 1-5ms apart, and
-  // each chunk on its own looks like a paste burst (multi-line
-  // content). Without merging the user gets four `[paste #N]`
-  // placeholders for one Ctrl+V. With a 30ms window + a guard that
-  // the previous sentinel is still right at cursor-1 (no typing
-  // happened in between), chunks of one paste collapse into one
-  // entry. The window is below human reaction time for double-
-  // pasting (Ctrl+V release → re-press takes 100ms+), so two
-  // deliberate pastes never falsely merge.
-  const lastPasteRef = useRef<{ id: number; at: number } | null>(null);
-  // Tracks the last `value` we ourselves produced via onChange. If the
-  // incoming `value` prop diverges from this, the parent (or some other
-  // source) replaced the buffer — we reset the cursor to end.
+
+  // Track external value replacement (history recall, slash completion).
+  // When the parent swaps `value` we snap cursor to end.
   const lastLocalValueRef = useRef(value);
   if (value !== lastLocalValueRef.current) {
     lastLocalValueRef.current = value;
-    if (cursor !== value.length) {
-      // Conditional setState during render is the "derived state" pattern;
-      // React schedules the re-render and the else branch of the `if`
-      // prevents infinite loops.
-      setCursor(value.length);
-    }
+    if (cursor !== value.length) setCursor(value.length);
   }
-  // Synchronous mirror of `cursor` for the same reason. When two
-  // useInput firings happen in the same React tick (PowerShell+Ink
-  // emits useInput twice per stdin chunk), the second fire's
-  // closure still sees the stale `cursor` from before the first
-  // fire's setCursor took effect. Reading from a ref we update
-  // synchronously inside `registerPaste` lets the second fire's
-  // merge guard see the just-inserted sentinel at cursor-1.
-  const cursorRef = useRef(cursor);
-  cursorRef.current = cursor;
 
-  // Shared ticker drives the cursor blink. Dividing the tick by 4 lands
-  // the visible on/off cycle around 480ms — standard cursor cadence.
-  const tick = useTick();
-  const showCursor = disabled ? false : Math.floor(tick / 4) % 2 === 0;
-
-  // Helper: register an accumulated paste blob and insert its
-  // sentinel into the buffer at the current cursor. If the previous
-  // paste's sentinel is still at cursor-1 AND we're inside the
-  // sub-human-reaction merge window, append to that entry instead
-  // of creating a new sentinel — this collapses chunks of one
-  // user paste action that arrived as multiple stdin reads (the
-  // PowerShell+ConPTY+Ink case where bracketed-paste markers got
-  // eaten upstream).
+  /**
+   * Register one paste blob and insert its sentinel at the current
+   * cursor. Used both by `paste` events from the stdin reader (the
+   * normal path on terminals that support DECSET 2004) and by the
+   * fallback path inside `processMultilineKey` for chunks that
+   * arrived without bracketed-paste markers.
+   */
   const registerPaste = (content: string) => {
-    // Read from refs, NOT from closure variables. PowerShell+Ink
-    // fires useInput twice per stdin chunk; both fires close over
-    // the same stale `value` and `cursor` from React state. Refs
-    // get updated synchronously below, so the second fire sees the
-    // just-inserted sentinel at cursor-1 and the merge guard fires
-    // correctly. This was the core reason a single Ctrl+V kept
-    // producing four `[paste #N]` placeholders.
     const v = lastLocalValueRef.current;
-    const c = cursorRef.current;
-    const now = Date.now();
-    const last = lastPasteRef.current;
-    const prevChar = c > 0 ? v[c - 1] : null;
-    const prevId = prevChar ? decodePasteSentinel(prevChar) : null;
-    const canMerge =
-      last !== null &&
-      prevId === last.id &&
-      now - last.at < PASTE_MERGE_WINDOW_MS &&
-      pastesRef.current.has(last.id);
-    if (canMerge && last) {
-      const existing = pastesRef.current.get(last.id);
-      if (existing) {
-        const merged = existing.content + content;
-        pastesRef.current.set(last.id, makePasteEntry(last.id, merged));
-        lastPasteRef.current = { id: last.id, at: now };
-        return;
-      }
-    }
+    const c = cursor;
     const id = nextPasteIdRef.current % PASTE_SENTINEL_RANGE;
     nextPasteIdRef.current = id + 1;
     pastesRef.current.set(id, makePasteEntry(id, content));
     const sentinel = encodePasteSentinel(id);
     const next = v.slice(0, c) + sentinel + v.slice(c);
-    // Update refs synchronously so the SECOND useInput fire (same
-    // React tick) sees the new buffer + cursor. Then schedule the
-    // React state updates for re-render.
     lastLocalValueRef.current = next;
-    cursorRef.current = c + 1;
     onChange(next);
     setCursor(c + 1);
-    lastPasteRef.current = { id, at: now };
   };
 
-  useInput(
-    (input, key) => {
-      // Bracketed-paste accumulator. The terminal tells us EXACTLY
-      // when a paste begins / ends via `\x1b[200~` / `\x1b[201~`.
-      // Even when a 50KB paste arrives across many stdin reads,
-      // the markers bracket the entire paste once. We accumulate
-      // everything between them into a single sentinel — solving
-      // the "one user paste shows up as N adjacent placeholders"
-      // bug without resorting to time-based heuristics that would
-      // wrongly merge two quick deliberate pastes. On terminals
-      // that don't support DECSET 2004 (cmd.exe), markers never
-      // appear and we fall back to the per-chunk pasteRequest
-      // path below — chunks split visually but stay correct.
-      if (pasteAccumRef.current !== null) {
-        const end = findPasteEnd(input);
-        if (end === null) {
-          pasteAccumRef.current += input;
-          return;
-        }
-        const content = pasteAccumRef.current + input.slice(0, end.idx);
-        pasteAccumRef.current = null;
-        registerPaste(content);
-        return;
+  useKeystroke((ev) => {
+    if (disabled) return;
+    if (ev.paste) {
+      // Bracketed-paste content delivered by the stdin reader.
+      // Insert as one sentinel regardless of length.
+      if (ev.input.length > 0) registerPaste(ev.input);
+      return;
+    }
+    const key: MultilineKey = {
+      input: ev.input,
+      return: ev.return,
+      shift: ev.shift,
+      ctrl: ev.ctrl,
+      meta: ev.meta,
+      backspace: ev.backspace,
+      delete: ev.delete,
+      tab: ev.tab,
+      upArrow: ev.upArrow,
+      downArrow: ev.downArrow,
+      leftArrow: ev.leftArrow,
+      rightArrow: ev.rightArrow,
+      escape: ev.escape,
+      pageUp: ev.pageUp,
+      pageDown: ev.pageDown,
+    };
+    const action = processMultilineKey(value, cursor, key);
+    if (action.pasteRequest) {
+      registerPaste(action.pasteRequest.content);
+      return;
+    }
+    if (action.next !== null) {
+      lastLocalValueRef.current = action.next;
+      onChange(action.next);
+    }
+    if (action.cursor !== null) {
+      setCursor(action.cursor);
+    }
+    if (action.submit) {
+      const raw = action.submitValue ?? value;
+      const expanded = expandPasteSentinels(raw, pastesRef.current);
+      // GC unreachable paste entries — anything backspace'd out of
+      // the buffer before submit. Keeps the registry from growing
+      // unbounded across many turns.
+      const reachable = new Set(listPasteIdsInBuffer(raw));
+      for (const id of pastesRef.current.keys()) {
+        if (!reachable.has(id)) pastesRef.current.delete(id);
       }
-      const start = findPasteStart(input);
-      if (start !== null) {
-        const afterStart = input.slice(start.idx + start.len);
-        const end = findPasteEnd(afterStart);
-        if (end !== null) {
-          // Whole paste in one read — register and we're done.
-          registerPaste(afterStart.slice(0, end.idx));
-        } else {
-          // Open paste mode for subsequent useInput events.
-          pasteAccumRef.current = afterStart;
-        }
-        return;
-      }
+      onSubmit(expanded);
+    }
+    if (action.historyHandoff === "prev") onHistoryPrev?.();
+    if (action.historyHandoff === "next") onHistoryNext?.();
+  }, !disabled);
 
-      const ke: MultilineKey = {
-        input,
-        return: key.return,
-        shift: key.shift,
-        ctrl: key.ctrl,
-        meta: key.meta,
-        backspace: key.backspace,
-        delete: key.delete,
-        tab: key.tab,
-        upArrow: key.upArrow,
-        downArrow: key.downArrow,
-        leftArrow: key.leftArrow,
-        rightArrow: key.rightArrow,
-        escape: key.escape,
-        pageUp: key.pageUp,
-        pageDown: key.pageDown,
-      };
-      const action = processMultilineKey(value, cursor, ke);
-      if (action.pasteRequest) {
-        // No bracketed-paste markers were seen — terminal doesn't
-        // support DECSET 2004, or Ink's key parser ate them. Fall
-        // back to per-chunk paste registration. Two chunks of the
-        // same big paste land as two placeholders; correctness
-        // preserved, only visual cohesion lost.
-        registerPaste(action.pasteRequest.content);
-        return;
-      }
-      if (action.next !== null) {
-        lastLocalValueRef.current = action.next;
-        onChange(action.next);
-      }
-      if (action.cursor !== null) {
-        setCursor(action.cursor);
-      }
-      if (action.submit) {
-        // Expand sentinels back to real paste content before handing
-        // the prompt up to the parent. The buffer carries placeholders
-        // for display; the model needs the full text.
-        const raw = action.submitValue ?? value;
-        const expanded = expandPasteSentinels(raw, pastesRef.current);
-        // GC unreachable paste entries — anything whose sentinel was
-        // backspace'd out of the buffer before submit. Keeps the
-        // registry from growing unbounded across many turns.
-        const reachable = new Set(listPasteIdsInBuffer(raw));
-        for (const id of pastesRef.current.keys()) {
-          if (!reachable.has(id)) pastesRef.current.delete(id);
-        }
-        onSubmit(expanded);
-      }
-      if (action.historyHandoff === "prev") onHistoryPrev?.();
-      if (action.historyHandoff === "next") onHistoryNext?.();
-    },
-    { isActive: !disabled },
-  );
+  // ── Render ──────────────────────────────────────────────────────
 
-  // Narrow-terminal mode: drop the `you ›` (6 col) prefix to a `›` (2
-  // col) marker so the writable area on 80-col terminals reclaims 4
-  // cols. Threshold of 90 keeps the friendly `you ›` on anything that
-  // resembles a normal terminal; modern laptops tend to default to
-  // 100+ cols, narrow ones (split panes, embedded shells) tend to be
-  // <=90. Continuation indent shrinks proportionally so wrapped lines
-  // still align under the prompt arrow.
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
   const narrow = cols <= 90;
   const promptPrefix = narrow ? "› " : "you › ";
-  const continuationIndent = narrow ? " " : "     ";
+  const continuationIndent = narrow ? "  " : "      ";
+  const prefixCells = narrow ? 2 : 6;
+  // Reserve 2 cells for the surrounding `paddingX={1}` plus 1 cell
+  // for the cursor block when at end-of-line. Net visible budget per
+  // line.
+  const visibleCells = Math.max(8, cols - prefixCells - 3);
+
   const placeholderActive = narrow
     ? "type a message, or /command"
     : "type a message, or /command  ·  [Shift+Enter] / [Ctrl+J] newline";
@@ -319,78 +168,50 @@ export function PromptInput({
     : (placeholder ?? placeholderActive);
 
   const lines = value.length > 0 ? value.split("\n") : [""];
-  const borderColor = disabled ? "gray" : "cyan";
+  const accentColor = disabled ? "gray" : "cyan";
   const { line: cursorLine, col: cursorCol } = lineAndColumn(value, cursor);
-  // For large buffers (e.g. a big paste), rendering every line
-  // re-runs Ink's layout + terminal write on every keystroke. Each
-  // keystroke touching 500 rendered lines flickers visibly on most
-  // terminals. Collapse to HEAD + cursor-line + TAIL with a dim
-  // `[… N lines hidden …]` marker. Edit position is still anywhere;
-  // the visible cursor line follows the cursor into/out of the
-  // collapsed region so the user never loses sight of what they're
-  // typing. Submitted value is the FULL buffer — collapse is purely
-  // visual.
+
+  // Big-buffer mitigation: if the buffer has many logical lines,
+  // collapse middle rows so Ink isn't redrawing 500+ rows per
+  // keystroke.
   const renderItems = collapseLinesForDisplay(lines, cursorLine);
-  // When the buffer is large enough to be collapsed, surface a dim
-  // hint about the buffer-wide shortcuts. The user just pasted 500
-  // lines; without this they have no idea PageUp/Ctrl+U exist and
-  // ↑×500 is the only path back to the top.
   const showHugeBufferHints = lines.length > 20;
 
   return (
-    // Borderless layout. Bordered Boxes amplify Ink's eraseLines
-    // miscount on fragile Windows terminals — every render that wraps
-    // pushes a ghost top-border into scrollback. Without a border the
-    // visual hierarchy comes from the bold colored prefix (`you ›`)
-    // and the cursor block; row-by-row stacking via `flexDirection`
-    // gives multi-line composition the same shape it had inside the
-    // box.
-    <Box paddingX={1} flexDirection="column">
+    <Box flexDirection="column" paddingX={1}>
       {renderItems.map((item, renderIdx) => {
         if (item.kind === "skip") {
           return (
-            // biome-ignore lint/suspicious/noArrayIndexKey: stable — skip markers are derived from a fixed-size window over `lines`
+            // biome-ignore lint/suspicious/noArrayIndexKey: stable — collapse markers derive from a fixed sliding window
             <Box key={`skip-${renderIdx}`}>
               <Text dimColor>{continuationIndent}</Text>
-              <Text
-                dimColor
-              >{`[… ${item.linesHidden} line${item.linesHidden === 1 ? "" : "s"} hidden — full content kept, submitted on Enter …]`}</Text>
+              <Text dimColor>
+                {`[… ${item.linesHidden} line${item.linesHidden === 1 ? "" : "s"} hidden — full content kept, submitted on Enter …]`}
+              </Text>
             </Box>
           );
         }
-        const line = item.line;
         const i = item.originalIndex;
+        const line = item.line;
         const isFirst = i === 0;
-        const showPlaceholder = isFirst && value.length === 0;
         const isCursorLine = i === cursorLine;
+        const showPlaceholder = isFirst && value.length === 0;
         return (
-          <Box key={`ln-${i}`}>
-            {isFirst ? (
-              <Text bold color={borderColor}>
-                {promptPrefix}
-              </Text>
-            ) : (
-              <Text dimColor>{continuationIndent}</Text>
-            )}
-            {showPlaceholder ? (
-              <>
-                {isCursorLine && !disabled ? (
-                  <Text color={borderColor}>{showCursor ? "▌" : " "}</Text>
-                ) : null}
-                <Text dimColor>{effectivePlaceholder}</Text>
-              </>
-            ) : isCursorLine && !disabled ? (
-              <LineWithCursor
-                line={line}
-                col={cursorCol}
-                showCursor={showCursor}
-                borderColor={borderColor}
-                pastes={pastesRef.current}
-              />
-            ) : (
-              <RenderLine line={line} pastes={pastesRef.current} />
-            )}
-          </Box>
+          <PromptLine
+            key={`ln-${i}`}
+            line={line}
+            isFirst={isFirst}
+            isCursorLine={isCursorLine && !disabled}
+            cursorCol={isCursorLine ? cursorCol : null}
+            showPlaceholder={showPlaceholder}
+            placeholderText={effectivePlaceholder}
+            promptPrefix={promptPrefix}
+            continuationIndent={continuationIndent}
+            visibleCells={visibleCells}
+            accentColor={accentColor}
+            pastes={pastesRef.current}
+            disabled={disabled === true}
+          />
         );
       })}
       {showHugeBufferHints && !disabled ? (
@@ -401,11 +222,6 @@ export function PromptInput({
           </Text>
         </Box>
       ) : null}
-      {/* Disabled-state Esc hint kept inside the bordered Box so the
-          live region's structure is one Box, not a `<>`-wrapped pair.
-          The fragment shape was a structural change with no layout
-          benefit — moving back here matches the simpler shape from
-          before 0.7.2, which the duplicating-borders Ink quirk amplified. */}
       {disabled ? (
         <Box>
           <Text dimColor>{continuationIndent}</Text>
@@ -416,23 +232,248 @@ export function PromptInput({
   );
 }
 
+// ── PromptLine ────────────────────────────────────────────────────
+
+interface PromptLineProps {
+  line: string;
+  isFirst: boolean;
+  isCursorLine: boolean;
+  cursorCol: number | null;
+  showPlaceholder: boolean;
+  placeholderText: string;
+  promptPrefix: string;
+  continuationIndent: string;
+  visibleCells: number;
+  accentColor: "cyan" | "gray";
+  pastes: ReadonlyMap<number, PasteEntry>;
+  disabled: boolean;
+}
+
+function PromptLine({
+  line,
+  isFirst,
+  isCursorLine,
+  cursorCol,
+  showPlaceholder,
+  placeholderText,
+  promptPrefix,
+  continuationIndent,
+  visibleCells,
+  accentColor,
+  pastes,
+  disabled,
+}: PromptLineProps) {
+  if (showPlaceholder) {
+    return (
+      <Box>
+        <Text bold color={accentColor}>
+          {promptPrefix}
+        </Text>
+        {!disabled ? <Text color={accentColor}>▌</Text> : null}
+        <Text dimColor>{placeholderText}</Text>
+      </Box>
+    );
+  }
+
+  const viewport = buildViewport(line, isCursorLine ? cursorCol : null, visibleCells, pastes);
+
+  // Render: prefix + (left marker?) + segments-with-cursor + (right marker?)
+  return (
+    <Box>
+      {isFirst ? (
+        <Text bold color={accentColor}>
+          {promptPrefix}
+        </Text>
+      ) : (
+        <Text dimColor>{continuationIndent}</Text>
+      )}
+      {viewport.hiddenLeft ? (
+        <Text color="gray" dimColor>
+          ‹
+        </Text>
+      ) : null}
+      <ViewportContent
+        segments={viewport.segments}
+        cursorCell={isCursorLine ? viewport.cursorCell : null}
+        accentColor={accentColor}
+      />
+      {viewport.hiddenRight ? (
+        <Text color="gray" dimColor>
+          ›
+        </Text>
+      ) : null}
+    </Box>
+  );
+}
+
+// ── ViewportContent ────────────────────────────────────────────────
+
 /**
- * One visual slot in the rendered prompt box. Either a real buffer
- * line (with its original index so the cursor / first-line prefix
- * still line up) or a "skip" marker summarizing hidden rows.
+ * Render a viewport's segments with a cursor block at `cursorCell`.
+ * Walks segments in order; the cursor splits at most one segment
+ * (the one containing the cursor cell), producing an inverted char
+ * at that position.
+ *
+ * End-of-line cursor (cursorCell points past the last cell of the
+ * last segment): emit a trailing block.
  */
+function ViewportContent({
+  segments,
+  cursorCell,
+  accentColor,
+}: {
+  segments: Segment[];
+  cursorCell: number | null;
+  accentColor: "cyan" | "gray";
+}) {
+  // No cursor on this line — straight render.
+  if (cursorCell === null) {
+    return <>{segments.map((seg, i) => renderSegment(seg, i, false))}</>;
+  }
+
+  // Walk segments tallying cells; once we reach `cursorCell`, split
+  // the segment to insert the cursor block.
+  const out: React.ReactNode[] = [];
+  let cells = 0;
+  let placed = false;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]!;
+    const segCells = segmentCells(seg);
+    if (placed) {
+      out.push(renderSegment(seg, i, false));
+      continue;
+    }
+    if (cursorCell >= cells + segCells) {
+      // Cursor isn't in this segment.
+      out.push(renderSegment(seg, i, false));
+      cells += segCells;
+      continue;
+    }
+    // Cursor lands inside this segment.
+    if (seg.kind === "paste") {
+      // The cursor is "on" the paste sentinel — render the paste
+      // block inversed so the user sees they're at it.
+      out.push(
+        <Text key={`p-${i}-cursor`} color="magenta" bold inverse>
+          {seg.label}
+        </Text>,
+      );
+      placed = true;
+      cells += segCells;
+      continue;
+    }
+    // text segment — split before/at-cursor/after by cell offset.
+    const offsetIntoSeg = cursorCell - cells;
+    const split = splitTextByCells(seg.text, offsetIntoSeg);
+    if (split.before.length > 0) {
+      out.push(<Text key={`t-${i}-b`}>{split.before}</Text>);
+    }
+    if (split.atCursor.length > 0) {
+      out.push(
+        <Text key={`t-${i}-c`} inverse color={accentColor}>
+          {split.atCursor}
+        </Text>,
+      );
+    } else {
+      // Cursor sits past the segment's last char (end-of-text in this
+      // segment). Render block here.
+      out.push(
+        <Text key={`t-${i}-c-eol`} color={accentColor}>
+          ▌
+        </Text>,
+      );
+    }
+    if (split.after.length > 0) {
+      out.push(<Text key={`t-${i}-a`}>{split.after}</Text>);
+    }
+    placed = true;
+    cells += segCells;
+  }
+
+  // Cursor sits past every segment (end of line).
+  if (!placed) {
+    out.push(
+      <Text key="cursor-eol" color={accentColor}>
+        ▌
+      </Text>,
+    );
+  }
+
+  return <>{out}</>;
+}
+
+function segmentCells(seg: Segment): number {
+  if (seg.kind === "paste") return seg.label.length;
+  return stringCells(seg.text);
+}
+
+/**
+ * Split a text string at a cell offset, returning the chars before
+ * the offset, the char AT the offset (the cursor block highlights
+ * it), and the chars after. A wide char that straddles the offset
+ * is treated as the cursor's char.
+ */
+function splitTextByCells(
+  text: string,
+  cellOffset: number,
+): { before: string; atCursor: string; after: string } {
+  let cells = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    const cw = charCellsForText(ch);
+    if (cells === cellOffset) {
+      return { before: text.slice(0, i), atCursor: ch, after: text.slice(i + 1) };
+    }
+    if (cells + cw > cellOffset) {
+      // The wide char straddles the offset — show it as the cursor char.
+      return { before: text.slice(0, i), atCursor: ch, after: text.slice(i + 1) };
+    }
+    cells += cw;
+  }
+  // Cursor at end of text.
+  return { before: text, atCursor: "", after: "" };
+}
+
+/**
+ * Local cell-counting helper — duplicates `charCells` from
+ * prompt-viewport but inlined to avoid a back-and-forth import (this
+ * function is hot per-keystroke). Keep in sync.
+ */
+function charCellsForText(ch: string): number {
+  const code = ch.charCodeAt(0);
+  if (code < 0x20 || code === 0x7f) return 0;
+  if (code < 0x1100) return 1;
+  if (code >= 0x1100 && code <= 0x115f) return 2;
+  if (code >= 0x2e80 && code <= 0x303e) return 2;
+  if (code >= 0x3041 && code <= 0x33ff) return 2;
+  if (code >= 0x3400 && code <= 0x4dbf) return 2;
+  if (code >= 0x4e00 && code <= 0x9fff) return 2;
+  if (code >= 0xa000 && code <= 0xa4cf) return 2;
+  if (code >= 0xac00 && code <= 0xd7a3) return 2;
+  if (code >= 0xf900 && code <= 0xfaff) return 2;
+  if (code >= 0xfe30 && code <= 0xfe4f) return 2;
+  if (code >= 0xff00 && code <= 0xff60) return 2;
+  if (code >= 0xffe0 && code <= 0xffe6) return 2;
+  return 1;
+}
+
+function renderSegment(seg: Segment, key: number, _inverse: boolean): React.ReactNode {
+  if (seg.kind === "text") {
+    return <Text key={`s-${key}`}>{seg.text}</Text>;
+  }
+  return (
+    <Text key={`s-${key}`} color="magenta" bold>
+      {seg.label}
+    </Text>
+  );
+}
+
+// ── collapse helper (preserved from v1) ────────────────────────────
+
 type RenderItem =
   | { kind: "line"; line: string; originalIndex: number }
   | { kind: "skip"; linesHidden: number };
 
-/**
- * Above this line count we stop rendering every line on every
- * keystroke — a 500-line paste would otherwise make Ink redraw
- * hundreds of rows per character typed, which is visibly janky.
- * Chosen empirically: under 20 lines the user is still visually
- * scanning the buffer; above that they're almost always looking
- * at a pasted blob that should be summarized.
- */
 const COLLAPSE_THRESHOLD = 20;
 const COLLAPSE_HEAD_LINES = 3;
 const COLLAPSE_TAIL_LINES = 2;
@@ -441,9 +482,6 @@ export function collapseLinesForDisplay(lines: string[], cursorLine: number): Re
   if (lines.length <= COLLAPSE_THRESHOLD) {
     return lines.map((line, i) => ({ kind: "line" as const, line, originalIndex: i }));
   }
-  // Always show the first HEAD lines, the last TAIL lines, and
-  // the cursor line if it falls in the collapsed middle. Union
-  // the indices so head/cursor/tail overlap collapses cleanly.
   const keep = new Set<number>();
   for (let i = 0; i < COLLAPSE_HEAD_LINES && i < lines.length; i++) keep.add(i);
   for (let i = Math.max(0, lines.length - COLLAPSE_TAIL_LINES); i < lines.length; i++) keep.add(i);
@@ -459,101 +497,4 @@ export function collapseLinesForDisplay(lines: string[], cursorLine: number): Re
     prev = idx;
   }
   return out;
-}
-
-/**
- * Render a buffer line with paste sentinels expanded into magenta
- * `[paste #N · …]` placeholder blocks. Used for non-cursor lines and
- * for the prefix / suffix segments around the cursor on the cursor
- * line.
- *
- * Each codepoint is emitted as either:
- *   - text: accumulated in `buf`, flushed when a sentinel or the end
- *     of the line is reached.
- *   - placeholder block: a styled `[paste #N · 3337l · 184KB]` Text.
- *
- * No layout magic — the emitted segments sit inline in the parent
- * Box's row, just like plain text.
- */
-function RenderLine({
-  line,
-  pastes,
-  inverse,
-}: {
-  line: string;
-  pastes: ReadonlyMap<number, PasteEntry>;
-  inverse?: boolean;
-}) {
-  const segments: React.ReactNode[] = [];
-  let buf = "";
-  let segIdx = 0;
-  const flushBuf = () => {
-    if (buf.length === 0) return;
-    segments.push(
-      <Text key={`t-${segIdx++}`} inverse={inverse}>
-        {buf}
-      </Text>,
-    );
-    buf = "";
-  };
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]!;
-    const id = decodePasteSentinel(ch);
-    if (id === null) {
-      buf += ch;
-      continue;
-    }
-    flushBuf();
-    const entry = pastes.get(id);
-    const label = entry
-      ? `[paste #${id + 1} · ${entry.lineCount}l · ${formatBytesShort(entry.charCount)}]`
-      : `[paste #${id + 1} · (missing)]`;
-    segments.push(
-      <Text key={`p-${segIdx++}`} color="magenta" bold inverse={inverse}>
-        {label}
-      </Text>,
-    );
-  }
-  flushBuf();
-  if (segments.length === 0) {
-    // Empty line — return a single empty Text so Ink still renders a
-    // row. Otherwise this Box collapses to zero height.
-    return <Text> </Text>;
-  }
-  return <>{segments}</>;
-}
-
-function LineWithCursor({
-  line,
-  col,
-  showCursor,
-  borderColor,
-  pastes,
-}: {
-  line: string;
-  col: number;
-  showCursor: boolean;
-  borderColor: "cyan" | "gray";
-  pastes: ReadonlyMap<number, PasteEntry>;
-}) {
-  const before = line.slice(0, col);
-  const atCursor = line.slice(col, col + 1);
-  const after = line.slice(col + 1);
-  if (atCursor.length === 0) {
-    // Cursor sits past the last char of this line (end-of-line). Render
-    // a trailing block so the user sees where they're typing next.
-    return (
-      <>
-        <RenderLine line={before} pastes={pastes} />
-        <Text color={borderColor}>{showCursor ? "▌" : " "}</Text>
-      </>
-    );
-  }
-  return (
-    <>
-      <RenderLine line={before} pastes={pastes} />
-      <RenderLine line={atCursor} pastes={pastes} inverse={showCursor} />
-      <RenderLine line={after} pastes={pastes} />
-    </>
-  );
 }
