@@ -1,5 +1,5 @@
 import type { WriteStream } from "node:fs";
-import { Box, Static, useApp, useInput } from "ink";
+import { Box, Static, useApp, useInput, useStdout } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { expandAtMentions } from "../../at-mentions.js";
 import {
@@ -167,6 +167,28 @@ export function App({
     total?: number;
     message?: string;
   } | null>(null);
+  // stdout handle for `/clear`-style hard screen wipes. Clearing only
+  // React state (setHistorical([])) leaves the terminal scrollback
+  // intact — the user keeps seeing prior turns until they scroll past
+  // them. Writing CSI 2J + 3J + H genuinely nukes viewport AND
+  // scrollback, which is what `/clear` means to a shell user.
+  const { stdout } = useStdout();
+  // Bracketed paste mode (DECSET 2004): tell the terminal to wrap
+  // pasted text with \x1b[200~ … \x1b[201~ markers. Without this,
+  // a multi-chunk paste from stdin can interleave with key events
+  // (Ink sometimes interprets the paste's trailing \n as Enter,
+  // submitting the partial buffer). With it, the terminal hands
+  // us the paste as one atomic payload that our processMultilineKey
+  // can detect via the markers and insert in one shot.
+  // Disable on unmount so the user's shell doesn't inherit the
+  // mode after the TUI exits.
+  useEffect(() => {
+    if (!stdout || !stdout.isTTY) return;
+    stdout.write("\u001b[?2004h");
+    return () => {
+      stdout.write("\u001b[?2004l");
+    };
+  }, [stdout]);
   // Subagent UI wiring: live activity row + sink ref the loop closure
   // captures. Must be declared BEFORE loop construction so the
   // subagentRunner closure can read the ref.
@@ -833,29 +855,35 @@ export function App({
       }
     }
 
-    // Outside slash mode: ↑/↓ recall prior prompts — but ONLY when the
-    // buffer is empty. A non-empty buffer hands those keys to
-    // PromptInput for cursor movement (multi-line navigation, or a
-    // no-op on single-line) so the user doesn't accidentally clobber
-    // typed text with a recalled prompt.
-    if (input.length === 0) {
-      const hist = promptHistory.current;
-      if (key.upArrow) {
-        if (hist.length === 0) return;
-        const nextCursor = Math.min(historyCursor.current + 1, hist.length - 1);
-        historyCursor.current = nextCursor;
-        setInput(hist[hist.length - 1 - nextCursor] ?? "");
-        return;
-      }
-      if (key.downArrow) {
-        if (historyCursor.current < 0) return;
-        const nextCursor = historyCursor.current - 1;
-        historyCursor.current = nextCursor;
-        setInput(nextCursor < 0 ? "" : (hist[hist.length - 1 - nextCursor] ?? ""));
-        return;
-      }
-    }
+    // History recall (↑/↓) used to live here guarded by `input.length
+    // === 0`. It now runs inside PromptInput — the child detects
+    // when a buffer-edge arrow key has nowhere left to go (empty
+    // buffer, or cursor at first/last line of a multi-line draft)
+    // and calls back into `recallPrev` / `recallNext` below. That
+    // lets users escape into history from a multi-line draft by
+    // pressing ↑ at the first line without first emptying the
+    // buffer.
   });
+
+  // History recall callbacks passed into PromptInput. Walking the
+  // in-memory `promptHistory` list: ↑ moves backward through prior
+  // prompts (increments historyCursor); ↓ moves forward until we
+  // fall off the end, then resets to empty. No-op when the history
+  // is empty or we're already at the boundary.
+  const recallPrev = useCallback(() => {
+    const hist = promptHistory.current;
+    if (hist.length === 0) return;
+    const nextCursor = Math.min(historyCursor.current + 1, hist.length - 1);
+    historyCursor.current = nextCursor;
+    setInput(hist[hist.length - 1 - nextCursor] ?? "");
+  }, []);
+  const recallNext = useCallback(() => {
+    if (historyCursor.current < 0) return;
+    const hist = promptHistory.current;
+    const nextCursor = historyCursor.current - 1;
+    historyCursor.current = nextCursor;
+    setInput(nextCursor < 0 ? "" : (hist[hist.length - 1 - nextCursor] ?? ""));
+  }, []);
 
   // Edit-gate interceptor. Reroutes `edit_file` / `write_file` tool
   // calls through the review queue (in `review` mode) or the auto-apply
@@ -1226,10 +1254,11 @@ export function App({
           return;
         }
         if (result.clear && result.info) {
-          // Clear + message: wipe scrollback, then seed the new view
-          // with the explanatory info line so the user sees *what
-          // happened*. Previously clear alone left them staring at
-          // an empty screen with no confirmation.
+          // Clear + message: nuke terminal viewport AND scrollback
+          // (2J = visible, 3J = scrollback buffer, H = cursor home),
+          // then seed React state with the explanatory info line.
+          // Ink's next render paints the TUI on the fresh screen.
+          stdout?.write("\x1b[2J\x1b[3J\x1b[H");
           setHistorical([
             {
               id: `sys-${Date.now()}`,
@@ -1248,6 +1277,7 @@ export function App({
           return;
         }
         if (result.clear) {
+          stdout?.write("\x1b[2J\x1b[3J\x1b[H");
           setHistorical([]);
           if (codeMode) {
             pendingEdits.current = [];
@@ -1955,6 +1985,7 @@ export function App({
       refreshModels,
       proArmed,
       persistPlanState,
+      stdout,
     ],
   );
 
@@ -2675,6 +2706,8 @@ export function App({
               onChange={setInput}
               onSubmit={handleSubmit}
               disabled={busy}
+              onHistoryPrev={recallPrev}
+              onHistoryNext={recallNext}
             />
             <SlashSuggestions matches={slashMatches} selectedIndex={slashSelected} />
             <AtMentionSuggestions

@@ -49,8 +49,10 @@ describe("handleSlash", () => {
     const r = handleSlash("clear", [], makeLoop());
     expect(r.clear).toBe(true);
     // Clear should also explain that context is NOT dropped — users
-    // keep confusing this with /new.
-    expect(r.info).toMatch(/visible scrollback only/);
+    // keep confusing this with /new. 0.7.1 bumped the action from a
+    // React-state-only clear to a real terminal wipe (CSI 2J+3J),
+    // so the info line says "terminal cleared" now.
+    expect(r.info).toMatch(/terminal cleared/);
     expect(r.info).toMatch(/\/new/);
   });
 

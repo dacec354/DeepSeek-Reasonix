@@ -4,7 +4,7 @@ const exit: SlashHandler = () => ({ exit: true });
 
 const clear: SlashHandler = () => ({
   clear: true,
-  info: "▸ cleared visible scrollback only. Context (message log) is intact — next turn still sees everything. Use /new to start fresh, or /forget to delete the session entirely.",
+  info: "▸ terminal cleared (viewport + scrollback). Context (message log) is intact — next turn still sees everything. Use /new to start fresh, or /forget to delete the session entirely.",
 });
 
 const resetLog: SlashHandler = (_args, loop) => {
@@ -25,8 +25,11 @@ const keys: SlashHandler = () => ({
     "  Enter                  submit the current prompt",
     "  Shift+Enter  /  Ctrl+J  insert a newline (multi-line prompt)",
     "  \\<Enter>               bash-style line continuation",
-    "  ← → ↑ ↓                move cursor / recall history when buffer empty",
-    "  Ctrl+A / Ctrl+E        jump to start / end of the current line",
+    "  ← → ↑ ↓                move cursor / recall history at buffer boundary",
+    "  PageUp / PageDown      jump to top / bottom of the WHOLE buffer (handy after a big paste)",
+    "  Ctrl+A / Ctrl+E        jump to start / end of the CURRENT line",
+    "  Ctrl+U                 clear the entire input buffer",
+    "  Ctrl+W                 delete the word before the cursor",
     "  Backspace              delete left;  Delete   delete under cursor",
     "  Esc                    abort the in-flight turn",
     "  y / n                  accept / reject pending edits (code mode)",
@@ -114,6 +117,12 @@ const help: SlashHandler = () => ({
     "Sessions (auto-enabled by default, named 'default'):",
     "  reasonix chat --session <name>   use a different named session",
     "  reasonix chat --no-session       disable persistence for this run",
+    "",
+    "Known limitation:",
+    "  Resizing the terminal mid-session may stack ghost header frames in",
+    "  scrollback (Ink library's live-region clear doesn't account for line",
+    "  re-wrapping at the new width). Scroll-up history is unaffected; the",
+    "  artifact is purely visual and clears the next time you /clear.",
   ].join("\n"),
 });
 

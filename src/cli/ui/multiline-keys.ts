@@ -47,25 +47,72 @@ export interface MultilineAction {
   /** When `true`, fire `onSubmit(submitValue ?? value)`. */
   submit: boolean;
   submitValue?: string;
+  /**
+   * When set, the key was ↑/↓ at a buffer boundary (empty buffer, or
+   * cursor already at first/last line) and the component should hand
+   * off to the parent's history-recall handler. The child's cursor
+   * didn't move; the parent decides whether to swap in a prior
+   * prompt. Lets users escape out of a multi-line buffer into
+   * history without first emptying it — previously NOOP felt stuck.
+   */
+  historyHandoff?: "prev" | "next";
+  /**
+   * Multi-char paste detected. The reducer is pure so it can't
+   * allocate a sentinel id or write to the registry — it hands the
+   * raw normalized payload up to PromptInput, which registers the
+   * paste, picks a sentinel codepoint, and inserts THAT (one char)
+   * into the buffer. Result: the user sees a `[paste #N · M lines]`
+   * placeholder instead of the full content drowning the typed text.
+   */
+  pasteRequest?: { content: string };
 }
 
 const BACKSLASH_SUFFIX = /\\$/;
 
 const NOOP: MultilineAction = { next: null, cursor: null, submit: false };
 
+function rewriteRawArrowEscape(key: MultilineKey): MultilineKey {
+  if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) return key;
+  if (key.input === "\x1b[A") return { ...key, upArrow: true, input: "" };
+  if (key.input === "\x1b[B") return { ...key, downArrow: true, input: "" };
+  if (key.input === "\x1b[C") return { ...key, rightArrow: true, input: "" };
+  if (key.input === "\x1b[D") return { ...key, leftArrow: true, input: "" };
+  return key;
+}
+
 export function processMultilineKey(
   value: string,
   cursor: number,
-  key: MultilineKey,
+  keyIn: MultilineKey,
 ): MultilineAction {
-  // Parent-owned keys: Tab (slash-complete), Esc (abort), PageUp/Down.
-  if (key.tab || key.escape || key.pageUp || key.pageDown) {
+  // Raw-escape fallback for terminals (some Windows configurations —
+  // cmd.exe, older winpty) that don't set `key.upArrow` / etc. on
+  // arrow-key press and instead leak the raw ANSI CSI sequence into
+  // `input`. Without this, `\x1b[A` lands on the "printable" branch
+  // below and the user sees literal escape bytes inserted into their
+  // buffer. Rewrite the event into the structured key here.
+  const key: MultilineKey = rewriteRawArrowEscape(keyIn);
+
+  // Parent-owned keys: Tab (slash-complete), Esc (abort).
+  if (key.tab || key.escape) {
     return NOOP;
+  }
+
+  // Buffer-wide navigation. Per-line motion (↑/↓ / Ctrl+A / Ctrl+E)
+  // is already covered; PageUp/PageDown are the missing "jump to
+  // top / bottom of the WHOLE buffer" pair, useful after pasting a
+  // 500-line blob where ↑×500 is absurd. Repurposed from the
+  // previous NOOP behavior (PageUp/Down had no binding).
+  if (key.pageUp) {
+    return cursor === 0 ? NOOP : { next: null, cursor: 0, submit: false };
+  }
+  if (key.pageDown) {
+    return cursor === value.length ? NOOP : { next: null, cursor: value.length, submit: false };
   }
 
   // Empty buffer + ↑/↓ → parent handles history recall.
   if (value.length === 0 && (key.upArrow || key.downArrow)) {
-    return NOOP;
+    return { ...NOOP, historyHandoff: key.upArrow ? "prev" : "next" };
   }
 
   // Cursor motion.
@@ -77,11 +124,16 @@ export function processMultilineKey(
   }
   if (key.upArrow) {
     const moved = moveCursorUp(value, cursor);
-    return moved === cursor ? NOOP : { next: null, cursor: moved, submit: false };
+    // Cursor already on the first line — hand off to history recall
+    // instead of sitting stuck. Users can now escape into history
+    // from the middle of a multi-line draft.
+    if (moved === cursor) return { ...NOOP, historyHandoff: "prev" };
+    return { next: null, cursor: moved, submit: false };
   }
   if (key.downArrow) {
     const moved = moveCursorDown(value, cursor);
-    return moved === cursor ? NOOP : { next: null, cursor: moved, submit: false };
+    if (moved === cursor) return { ...NOOP, historyHandoff: "next" };
+    return { next: null, cursor: moved, submit: false };
   }
 
   // Emacs-style line jumps (universal across terminals; Home/End aren't
@@ -92,8 +144,55 @@ export function processMultilineKey(
   if (key.ctrl && key.input === "e") {
     return { next: null, cursor: endOfLine(value, cursor), submit: false };
   }
+  // Bash / readline conventions:
+  //   Ctrl+U — clear the whole buffer (readline treats this as
+  //     "clear from cursor to start"; for our text-area we treat it
+  //     as "clear all" because there's no ergonomic way to clear a
+  //     huge paste otherwise).
+  //   Ctrl+W — delete the word before the cursor.
+  if (key.ctrl && key.input === "u") {
+    return value.length === 0 ? NOOP : { next: "", cursor: 0, submit: false };
+  }
+  if (key.ctrl && key.input === "w") {
+    if (cursor === 0) return NOOP;
+    const wordStart = previousWordStart(value, cursor);
+    return {
+      next: value.slice(0, wordStart) + value.slice(cursor),
+      cursor: wordStart,
+      submit: false,
+    };
+  }
 
-  // Newline: Ctrl+J (LF literal) or ctrl+'j' normalized form.
+  // Paste-burst detection. If `input` contains a newline (or
+  // bracketed-paste markers from a terminal that supports them),
+  // this is a paste — surface it as a `pasteRequest` so the parent
+  // can register the blob and insert ONE sentinel codepoint instead
+  // of the full content. The buffer stays small + readable; the
+  // user sees `[paste #N · M lines]` where the paste lives.
+  //
+  // Always overrides `key.return` for pastes: Ink occasionally sets
+  // key.return when a paste's trailing \n looks like Enter, which
+  // would submit the partial buffer mid-paste and silently truncate
+  // the content. Pastes always insert; Enter only submits typed
+  // content. We normalize \r\n and bare \r to \n so mixed-line-
+  // ending pastes (Windows clipboard, web copy) land cleanly.
+  const stripped = key.input.replaceAll("\u001b[200~", "").replaceAll("\u001b[201~", "");
+  // Paste = newline-containing input with MORE than just the newline
+  // itself. A bare "\n" is Ctrl+J / one-keystroke newline (handled
+  // below); only multi-char input wrapped around a newline is a real
+  // paste burst that warrants a sentinel.
+  const looksLikePaste =
+    stripped.length > 1 && (stripped.includes("\n") || stripped.includes("\r"));
+  if (looksLikePaste) {
+    const normalized = stripped.replace(/\r\n?/g, "\n");
+    return {
+      next: null,
+      cursor: null,
+      submit: false,
+      pasteRequest: { content: normalized },
+    };
+  }
+  // Single-char Ctrl+J / LF: insert one newline.
   if (key.input === "\n" || (key.ctrl && key.input === "j")) {
     return insertAt(value, cursor, "\n");
   }
@@ -170,6 +269,22 @@ export function lineAndColumn(value: string, cursor: number): { line: number; co
 
 function startOfLine(value: string, cursor: number): number {
   return value.lastIndexOf("\n", cursor - 1) + 1;
+}
+
+/**
+ * Find the start of the word immediately to the left of the cursor.
+ * Skips trailing whitespace first (so Ctrl+W after typing space
+ * still removes the previous word, not just the space), then walks
+ * back over the word characters until a whitespace boundary or
+ * start-of-buffer. Newlines count as whitespace, so Ctrl+W at the
+ * start of a line deletes the preceding line's last word — same
+ * behavior as bash/readline.
+ */
+function previousWordStart(value: string, cursor: number): number {
+  let i = cursor;
+  while (i > 0 && /\s/.test(value[i - 1] ?? "")) i--;
+  while (i > 0 && !/\s/.test(value[i - 1] ?? "")) i--;
+  return i;
 }
 
 function endOfLine(value: string, cursor: number): number {

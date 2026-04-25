@@ -159,7 +159,16 @@ export function StatsPanel({
   const coldStart = summary.turns <= COLD_START_TURNS;
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1}>
+    // Explicit `width={columns}` pins the border frame to the exact
+    // terminal width. Without this, Ink auto-flexes the Box to
+    // container width, and on terminal resize the prior frame's
+    // wrapped-overflow can leave tails in the scrollback (each
+    // redraw stacks a slightly-wider-or-narrower frame). Fixing
+    // width per-render doesn't eliminate the underlying Ink
+    // limitation (eraseLines counts logical rows, not post-wrap
+    // display rows) but makes each frame's dimensions exact so
+    // there's no residual uncertainty in the erase.
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} width={columns}>
       <Header
         model={model}
         prefixHash={prefixHash}

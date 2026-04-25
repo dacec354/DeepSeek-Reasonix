@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { collapseLinesForDisplay } from "../src/cli/ui/PromptInput.js";
 import {
   type MultilineKey,
   lineAndColumn,
@@ -35,10 +36,16 @@ describe("processMultilineKey — inserts at cursor", () => {
     expect(r.cursor).toBe(4);
   });
 
-  it("pasted newline lands inline (not a submit)", () => {
+  it("pasted newline-containing input surfaces as a pasteRequest (not direct insert)", () => {
+    // 0.8 changed paste handling: multi-char input with a newline is
+    // routed up as `pasteRequest` so the parent can register the
+    // blob and insert ONE sentinel codepoint instead of inlining
+    // the whole content. Direct insertion only happens for typed
+    // input without a newline.
     const r = processMultilineKey("a", 1, key({ input: "\nmore" }));
-    expect(r.next).toBe("a\nmore");
+    expect(r.next).toBeNull();
     expect(r.submit).toBe(false);
+    expect(r.pasteRequest?.content).toBe("\nmore");
   });
 });
 
@@ -141,27 +148,66 @@ describe("processMultilineKey — cursor motion", () => {
     expect(processMultilineKey("abc", 3, key({ rightArrow: true })).cursor).toBe(3);
   });
 
-  it("↑/↓ on a single-line non-empty buffer is a no-op (doesn't eat for history)", () => {
-    // Single-line buffer: moveCursorUp has nowhere to go. Returns NOOP so
-    // the parent can decide what to do — but parent only does history on
-    // empty buffer, so the net effect is "nothing happens."
+  it("↑/↓ on a single-line non-empty buffer hands off to history recall (nowhere to move)", () => {
+    // 0.7.1: previously this was a pure NOOP, which left the user
+    // feeling stuck when they wanted to recall a prior prompt from
+    // a non-empty buffer. Now we emit `historyHandoff` so the
+    // parent can decide — typically swap the buffer for the
+    // previous prompt.
     const up = processMultilineKey("hello", 3, key({ upArrow: true }));
-    expect(up).toEqual({ next: null, cursor: null, submit: false });
+    expect(up).toEqual({ next: null, cursor: null, submit: false, historyHandoff: "prev" });
     const down = processMultilineKey("hello", 3, key({ downArrow: true }));
-    expect(down).toEqual({ next: null, cursor: null, submit: false });
+    expect(down).toEqual({ next: null, cursor: null, submit: false, historyHandoff: "next" });
   });
 
-  it("↑/↓ on an empty buffer defers to the parent (history recall)", () => {
+  it("↑/↓ on an empty buffer hands off to the parent (history recall)", () => {
     expect(processMultilineKey("", 0, key({ upArrow: true }))).toEqual({
       next: null,
       cursor: null,
       submit: false,
+      historyHandoff: "prev",
     });
     expect(processMultilineKey("", 0, key({ downArrow: true }))).toEqual({
       next: null,
       cursor: null,
       submit: false,
+      historyHandoff: "next",
     });
+  });
+
+  it("↑ at line 0 of a multi-line buffer hands off to history (escape hatch from a draft)", () => {
+    // Cursor on first line, buffer has a second line below — ↑ has
+    // nowhere to move, so we emit the handoff. Previously this was
+    // a silent NOOP that trapped the user.
+    const v = "first\nsecond";
+    const handoff = processMultilineKey(v, 3, key({ upArrow: true }));
+    expect(handoff).toEqual({
+      next: null,
+      cursor: null,
+      submit: false,
+      historyHandoff: "prev",
+    });
+  });
+
+  it("↓ at last line hands off similarly", () => {
+    // cursor at pos 8 = col 2 on line 1 ("second")
+    const v = "first\nsecond";
+    const handoff = processMultilineKey(v, 8, key({ downArrow: true }));
+    expect(handoff.historyHandoff).toBe("next");
+  });
+
+  it("raw `\\x1b[A` escape sequence is rewritten into upArrow (Windows-terminal fallback)", () => {
+    // Some Windows consoles don't set key.upArrow; the raw CSI leaks
+    // through as `input` and would otherwise be inserted verbatim
+    // into the buffer. Rewrite into structured key instead.
+    const handoff = processMultilineKey("", 0, { input: "\x1b[A" });
+    expect(handoff.historyHandoff).toBe("prev");
+  });
+
+  it("raw `\\x1b[B` becomes downArrow; `\\x1b[C` rightArrow; `\\x1b[D` leftArrow", () => {
+    expect(processMultilineKey("", 0, { input: "\x1b[B" }).historyHandoff).toBe("next");
+    expect(processMultilineKey("abc", 0, { input: "\x1b[C" }).cursor).toBe(1);
+    expect(processMultilineKey("abc", 2, { input: "\x1b[D" }).cursor).toBe(1);
   });
 
   it("↑ moves cursor to the previous line, preserving column when possible", () => {
@@ -227,6 +273,158 @@ describe("processMultilineKey — parent-owned keys are ignored", () => {
   it("Meta (Alt) key events are dropped", () => {
     const r = processMultilineKey("x", 1, key({ input: "a", meta: true }));
     expect(r.next).toBeNull();
+  });
+});
+
+describe("processMultilineKey — buffer-wide navigation + clear shortcuts", () => {
+  it("PageUp jumps cursor to position 0 (top of buffer)", () => {
+    const v = "line1\nline2\nline3\nline4";
+    const r = processMultilineKey(v, 18, key({ pageUp: true }));
+    expect(r.cursor).toBe(0);
+  });
+
+  it("PageDown jumps cursor to value.length (end of buffer)", () => {
+    const v = "line1\nline2\nline3\nline4";
+    const r = processMultilineKey(v, 0, key({ pageDown: true }));
+    expect(r.cursor).toBe(v.length);
+  });
+
+  it("PageUp at top is a no-op (no cursor churn)", () => {
+    const r = processMultilineKey("hello", 0, key({ pageUp: true }));
+    expect(r).toEqual({ next: null, cursor: null, submit: false });
+  });
+
+  it("PageDown at end is a no-op", () => {
+    const v = "hello";
+    const r = processMultilineKey(v, v.length, key({ pageDown: true }));
+    expect(r).toEqual({ next: null, cursor: null, submit: false });
+  });
+
+  it("Ctrl+U clears the entire buffer", () => {
+    const r = processMultilineKey("a long\nmulti-line\npaste", 7, key({ input: "u", ctrl: true }));
+    expect(r.next).toBe("");
+    expect(r.cursor).toBe(0);
+  });
+
+  it("Ctrl+U on empty buffer is a no-op", () => {
+    const r = processMultilineKey("", 0, key({ input: "u", ctrl: true }));
+    expect(r).toEqual({ next: null, cursor: null, submit: false });
+  });
+
+  it("Ctrl+W deletes the word before the cursor", () => {
+    // cursor at end of "hello world", deletes "world"
+    const r = processMultilineKey("hello world", 11, key({ input: "w", ctrl: true }));
+    expect(r.next).toBe("hello ");
+    expect(r.cursor).toBe(6);
+  });
+
+  it("Ctrl+W eats trailing whitespace then the previous word", () => {
+    // cursor after "hello   " (3 spaces). Should delete the spaces AND "hello".
+    const r = processMultilineKey("hello   ", 8, key({ input: "w", ctrl: true }));
+    expect(r.next).toBe("");
+    expect(r.cursor).toBe(0);
+  });
+
+  it("Ctrl+W mid-word stops at the word's start", () => {
+    // cursor in middle of "hello", deletes "hel"
+    const r = processMultilineKey("hello world", 3, key({ input: "w", ctrl: true }));
+    expect(r.next).toBe("lo world");
+    expect(r.cursor).toBe(0);
+  });
+
+  it("Ctrl+W at start of buffer is a no-op", () => {
+    const r = processMultilineKey("hello", 0, key({ input: "w", ctrl: true }));
+    expect(r).toEqual({ next: null, cursor: null, submit: false });
+  });
+
+  it("Ctrl+W spans newlines — deletes the previous line's last word from line start", () => {
+    // cursor at start of "world" line (index 6), Ctrl+W deletes "hello\n"
+    const r = processMultilineKey("hello\nworld", 6, key({ input: "w", ctrl: true }));
+    expect(r.next).toBe("world");
+    expect(r.cursor).toBe(0);
+  });
+});
+
+describe("processMultilineKey — paste burst handling", () => {
+  it("paste with embedded \\n surfaces a pasteRequest, does NOT submit even with key.return set", () => {
+    // Repro of the reported bug: Ink occasionally sets key.return on
+    // a paste whose trailing \n looks like Enter. Pre-fix this would
+    // submit the partial buffer mid-paste. Now the reducer hands the
+    // paste up as a `pasteRequest` and never touches `submit`.
+    const r = processMultilineKey("", 0, key({ input: "line1\nline2\nline3", return: true }));
+    expect(r.submit).toBe(false);
+    expect(r.next).toBeNull();
+    expect(r.pasteRequest?.content).toBe("line1\nline2\nline3");
+  });
+
+  it("paste normalizes CRLF and bare CR to LF (Windows clipboard / web copy)", () => {
+    const r1 = processMultilineKey("", 0, key({ input: "a\r\nb\r\nc" }));
+    expect(r1.pasteRequest?.content).toBe("a\nb\nc");
+    const r2 = processMultilineKey("", 0, key({ input: "x\ry\rz" }));
+    expect(r2.pasteRequest?.content).toBe("x\ny\nz");
+  });
+
+  it("strips bracketed-paste markers if they leak through (DECSET 2004 supported terminals)", () => {
+    const wrapped = "\u001b[200~hello\nworld\u001b[201~";
+    const r = processMultilineKey("", 0, key({ input: wrapped }));
+    expect(r.pasteRequest?.content).toBe("hello\nworld");
+    expect(r.submit).toBe(false);
+  });
+
+  it("real Enter (input='', return=true) still submits — not mistaken for paste", () => {
+    const r = processMultilineKey("foo", 3, key({ input: "", return: true }));
+    expect(r.submit).toBe(true);
+    expect(r.submitValue).toBe("foo");
+  });
+
+  it("single-char Ctrl+J still inserts one newline directly (no pasteRequest)", () => {
+    const r = processMultilineKey("ab", 1, key({ input: "j", ctrl: true }));
+    expect(r.next).toBe("a\nb");
+    expect(r.pasteRequest).toBeUndefined();
+  });
+});
+
+describe("collapseLinesForDisplay — big-paste mitigation", () => {
+  it("returns all lines unchanged when under the threshold", () => {
+    const lines = ["a", "b", "c"];
+    const out = collapseLinesForDisplay(lines, 1);
+    expect(out).toHaveLength(3);
+    expect(out.every((x) => x.kind === "line")).toBe(true);
+  });
+
+  it("collapses long buffers into head + cursor + tail with skip markers", () => {
+    // 30 lines, cursor on line 15 (middle). Should render first 3,
+    // cursor line, last 2 — plus skip markers between the runs.
+    const lines = Array.from({ length: 30 }, (_, i) => `line${i}`);
+    const out = collapseLinesForDisplay(lines, 15);
+    const kinds = out.map((x) => x.kind);
+    // Shape: line×3, skip, line(cursor), skip, line×2
+    expect(kinds).toEqual(["line", "line", "line", "skip", "line", "skip", "line", "line"]);
+    // Cursor-line preserves its original index so the `you ›` prefix
+    // and the cursor column still line up with the correct row.
+    const cursorItem = out.find((x) => x.kind === "line" && x.originalIndex === 15);
+    expect(cursorItem).toBeDefined();
+  });
+
+  it("does NOT inject a skip marker when runs are adjacent", () => {
+    // Cursor on line 2 (already inside head=0..2). Head covers 0..2,
+    // tail covers 28..29. The cursor overlaps the head, so no
+    // middle skip is needed — only the gap between head and tail.
+    const lines = Array.from({ length: 30 }, (_, i) => `${i}`);
+    const out = collapseLinesForDisplay(lines, 2);
+    const kinds = out.map((x) => x.kind);
+    expect(kinds).toEqual(["line", "line", "line", "skip", "line", "line"]);
+  });
+
+  it("hidden count adds up to total - visible", () => {
+    const lines = Array.from({ length: 100 }, (_, i) => `${i}`);
+    const out = collapseLinesForDisplay(lines, 50);
+    const hidden = out.reduce(
+      (sum, item) => sum + (item.kind === "skip" ? item.linesHidden : 0),
+      0,
+    );
+    const visible = out.filter((x) => x.kind === "line").length;
+    expect(hidden + visible).toBe(100);
   });
 });
 
