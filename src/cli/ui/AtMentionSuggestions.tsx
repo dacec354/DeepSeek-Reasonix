@@ -59,7 +59,6 @@ export function AtMentionSuggestions({
 }
 
 function FileRow({ path, isSelected }: { path: string; isSelected: boolean }) {
-  const marker = isSelected ? "▸" : " ";
   // Split the path so the basename visually pops — same dropdown
   // affordance as VS Code's Quick Open.
   const slash = path.lastIndexOf("/");
@@ -68,19 +67,16 @@ function FileRow({ path, isSelected }: { path: string; isSelected: boolean }) {
   if (isSelected) {
     return (
       <Box>
-        <Text bold color="cyan">
-          {marker} {base}
+        <Text backgroundColor="#67e8f9" color="black" bold>
+          {` ▸ ${base}${dir ? `  ${dir}` : ""} `}
         </Text>
-        <Text color="cyan">{dir ? `  ${dir}` : ""}</Text>
       </Box>
     );
   }
   return (
     <Box>
-      <Text dimColor>
-        {marker} {base}
-        {dir ? `  ${dir}` : ""}
-      </Text>
+      <Text color="#94a3b8">{`   ${base}`}</Text>
+      {dir ? <Text dimColor>{`  ${dir}`}</Text> : null}
     </Box>
   );
 }

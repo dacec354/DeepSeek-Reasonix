@@ -57,29 +57,23 @@ export function SlashSuggestions({
 }
 
 function SuggestionRow({ spec, isSelected }: { spec: SlashCommandSpec; isSelected: boolean }) {
-  const marker = isSelected ? "▸" : " ";
   const name = `/${spec.cmd}`;
   const argsSuffix = spec.argsHint ? ` ${spec.argsHint}` : "";
-  // Selected row gets full cyan coloring so it pops out against the
-  // dimmed others — mirrors the style GitHub Issues / Discord use
-  // for focused dropdown rows.
+  // Selected row gets a solid-bg highlight (cyan) so it pops like
+  // an editor's focused autocomplete entry. Non-selected rows stay
+  // dim with a leading bullet for vertical rhythm.
   if (isSelected) {
     return (
       <Box>
-        <Text bold color="cyan">
-          {marker} {name.padEnd(12)}
-          {argsSuffix.padEnd(16)}
+        <Text backgroundColor="#67e8f9" color="black" bold>
+          {` ▸ ${name.padEnd(12)}${argsSuffix.padEnd(16)}  ${spec.summary} `}
         </Text>
-        <Text color="cyan"> {spec.summary}</Text>
       </Box>
     );
   }
   return (
     <Box>
-      <Text dimColor>
-        {marker} {name.padEnd(12)}
-        {argsSuffix.padEnd(16)} {spec.summary}
-      </Text>
+      <Text color="#94a3b8">{`   ${name.padEnd(12)}${argsSuffix.padEnd(16)} ${spec.summary}`}</Text>
     </Box>
   );
 }

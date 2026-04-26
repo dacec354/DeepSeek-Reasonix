@@ -191,10 +191,18 @@ export const EventRow = React.memo(function EventRow({
         {event.leadSeparator ? <TurnSeparator /> : null}
         <Box>
           <RoleGlyph glyph={ROLE_GLYPH.user} color="cyan" />
-          <Text>
-            {"  "}
-            {indentContinuationLines(event.text)}
-          </Text>
+          <Text>{"  "}</Text>
+          <Box
+            flexDirection="column"
+            borderStyle="single"
+            borderTop={false}
+            borderRight={false}
+            borderBottom={false}
+            borderColor={COLOR.user}
+            paddingLeft={1}
+          >
+            <Text>{indentContinuationLines(event.text)}</Text>
+          </Box>
         </Box>
       </Box>
     );
@@ -579,15 +587,14 @@ function ReasoningBlock({ reasoning }: { reasoning: string }) {
   // Users can dump the full reasoning with `/think` if needed.
   const preview =
     flat.length <= max ? flat : `… (+${flat.length - max} earlier chars) ${flat.slice(-max)}`;
-  // ▏ (LEFT ONE EIGHTH BLOCK) renders as a thin vertical rule at the
-  // cell edge — subtler than the role-level ▎ above, giving a
-  // visual hierarchy: thick bar = role, thin bar = nested detail
-  // under that role (thinking, stats, citations, etc).
   return (
     <Box marginBottom={1}>
-      <Text dimColor>▏ </Text>
-      <Text dimColor italic>
-        thinking {preview}
+      <Text backgroundColor={COLOR.accent} color="black" bold>
+        {" ⋯ thinking "}
+      </Text>
+      <Text> </Text>
+      <Text color={COLOR.accent} italic dimColor>
+        {preview}
       </Text>
     </Box>
   );

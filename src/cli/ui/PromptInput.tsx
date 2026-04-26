@@ -12,6 +12,8 @@ import {
   makePasteEntry,
 } from "./paste-sentinels.js";
 import { type Segment, buildViewport, stringCells } from "./prompt-viewport.js";
+import { GRADIENT } from "./theme.js";
+import { useTick } from "./ticker.js";
 
 /**
  * Visual anchor: a left vertical rule (▎ + space) running down every
@@ -180,6 +182,17 @@ export function PromptInput({
 
   const lines = value.length > 0 ? value.split("\n") : [""];
   const accentColor = disabled ? "gray" : "cyan";
+  // Animated bar: each row's ▎ picks a color from the brand gradient
+  // offset by the current tick. Slow flow (one cell every ~720 ms)
+  // ties the input visually to the wordmark + StatsPanel rules. When
+  // disabled (busy turn), the gradient is suppressed and the bar
+  // falls back to a single dim color so the screen calms down.
+  const tick = useTick();
+  const barOffset = Math.floor(tick / 6);
+  const barColorAt = (rowIdx: number): string =>
+    disabled
+      ? "gray"
+      : GRADIENT[(((rowIdx + barOffset) % GRADIENT.length) + GRADIENT.length) % GRADIENT.length]!;
   const { line: cursorLine, col: cursorCol } = lineAndColumn(value, cursor);
 
   // Big-buffer mitigation: if the buffer has many logical lines,
@@ -195,7 +208,7 @@ export function PromptInput({
           return (
             // biome-ignore lint/suspicious/noArrayIndexKey: stable — collapse markers derive from a fixed sliding window
             <Box key={`skip-${renderIdx}`}>
-              <Text color={accentColor}>{BAR}</Text>
+              <Text color={barColorAt(renderIdx)}>{BAR}</Text>
               <Text dimColor>{continuationIndent.slice(BAR.length)}</Text>
               <Text dimColor>
                 {`[… ${item.linesHidden} line${item.linesHidden === 1 ? "" : "s"} hidden — full content kept, submitted on Enter …]`}
@@ -221,6 +234,7 @@ export function PromptInput({
             continuationIndent={continuationIndent}
             visibleCells={visibleCells}
             accentColor={accentColor}
+            barColor={barColorAt(i)}
             pastes={pastesRef.current}
             disabled={disabled === true}
           />
@@ -228,7 +242,7 @@ export function PromptInput({
       })}
       {showHugeBufferHints && !disabled ? (
         <Box>
-          <Text color={accentColor}>{BAR}</Text>
+          <Text color={barColorAt(0)}>{BAR}</Text>
           <Text dimColor>{continuationIndent.slice(BAR.length)}</Text>
           <Text dimColor>
             {`[${lines.length} lines · PageUp/PageDown jump to top/bottom · Ctrl+U clear · Ctrl+W del word]`}
@@ -237,7 +251,7 @@ export function PromptInput({
       ) : null}
       {!disabled && !narrow && value.length > 0 && !value.includes("\n") ? (
         <Box>
-          <Text color={accentColor}>{BAR}</Text>
+          <Text color={barColorAt(0)}>{BAR}</Text>
           <Text dimColor>{continuationIndent.slice(BAR.length)}</Text>
           <Text dimColor>
             [Ctrl+J] newline · [Enter] submit · ends with \ for line continuation
@@ -246,7 +260,7 @@ export function PromptInput({
       ) : null}
       {disabled ? (
         <Box>
-          <Text color={accentColor}>{BAR}</Text>
+          <Text color={barColorAt(0)}>{BAR}</Text>
           <Text dimColor>{continuationIndent.slice(BAR.length)}</Text>
           <Text dimColor>[Esc] to stop</Text>
         </Box>
@@ -268,6 +282,8 @@ interface PromptLineProps {
   continuationIndent: string;
   visibleCells: number;
   accentColor: "cyan" | "gray";
+  /** Animated gradient color for the leading ▎ bar. Differs per row + tick. */
+  barColor: string;
   pastes: ReadonlyMap<number, PasteEntry>;
   disabled: boolean;
 }
@@ -283,19 +299,20 @@ function PromptLine({
   continuationIndent,
   visibleCells,
   accentColor,
+  barColor,
   pastes,
   disabled,
 }: PromptLineProps) {
   // The leading BAR cells of every prefix/continuation are the left
-  // anchor bar — render them as a separate accent-colored span so
-  // the bar stays visible (not dim) on continuation lines.
+  // anchor bar — render them as a separate span colored by the
+  // animated gradient so the bar appears to flow vertically.
   const barText = promptPrefix.slice(0, BAR.length);
   const bodyPrefix = promptPrefix.slice(BAR.length);
   const bodyContinuation = continuationIndent.slice(BAR.length);
   if (showPlaceholder) {
     return (
       <Box>
-        <Text color={accentColor}>{barText}</Text>
+        <Text color={barColor}>{barText}</Text>
         <Text bold color={accentColor}>
           {bodyPrefix}
         </Text>
@@ -310,7 +327,7 @@ function PromptLine({
   // Render: prefix + (left marker?) + segments-with-cursor + (right marker?)
   return (
     <Box>
-      <Text color={accentColor}>{barText}</Text>
+      <Text color={barColor}>{barText}</Text>
       {isFirst ? (
         <Text bold color={accentColor}>
           {bodyPrefix}
