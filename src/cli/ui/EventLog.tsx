@@ -150,6 +150,23 @@ function RoleGlyph({
 }
 
 /**
+ * Solid-background pill for tool names. Mirrors the StatsPanel's mode
+ * pills so the visual language stays consistent across the screen:
+ * status (auto/review/plan), tool name, model. Status drives the
+ * background color — yellow for ok/in-flight, red for errors — so a
+ * scrollback full of tool dispatches reads at a glance.
+ */
+function ToolPill({ label, status }: { label: string; status: "ok" | "err" }) {
+  const bg = status === "err" ? "red" : "yellow";
+  const symbol = status === "err" ? "✗" : "✓";
+  return (
+    <Text backgroundColor={bg} color="black" bold>
+      {` ${symbol} ${label} `}
+    </Text>
+  );
+}
+
+/**
  * Pad continuation lines so wrapped multi-line text aligns under the
  * glyph indent instead of jumping back to column 0. Header is `glyph
  * (1 col) + "  " (2 cols)`, so subsequent lines need 3 leading spaces
@@ -187,7 +204,14 @@ export const EventRow = React.memo(function EventRow({
       <Box flexDirection="column" marginTop={1}>
         <Box>
           <RoleGlyph glyph={ROLE_GLYPH.assistant} color="green" />
-          {event.stats ? <Text dimColor>{`  ${event.stats.model}`}</Text> : null}
+          {event.stats ? (
+            <>
+              <Text>{"  "}</Text>
+              <Text backgroundColor="green" color="black" bold>
+                {` ${event.stats.model.replace(/^deepseek-/, "")} `}
+              </Text>
+            </>
+          ) : null}
         </Box>
         <Box flexDirection="column" paddingLeft={2} marginTop={1}>
           {event.branch ? <BranchBlock branch={event.branch} /> : null}
@@ -219,11 +243,8 @@ export const EventRow = React.memo(function EventRow({
       return (
         <Box flexDirection="column" marginTop={1}>
           <Box>
-            <RoleGlyph glyph={ROLE_GLYPH.toolOk} color="yellow" />
-            <Text color="yellow" bold>{`  ${event.toolName ?? "?"}`}</Text>
-            <Text color="yellow" dimColor>
-              {"  →"}
-            </Text>
+            <ToolPill label={event.toolName ?? "?"} status="ok" />
+            <Text dimColor>{"   diff:"}</Text>
           </Box>
           <Box flexDirection="column" paddingLeft={2} marginTop={1}>
             <EditFileDiff text={event.text} />
@@ -236,21 +257,18 @@ export const EventRow = React.memo(function EventRow({
     // count for read_file, error tag for failures, ...). Full content
     // remains accessible via `/tool N`, hinted as a dim suffix.
     const summary = summarizeToolResult(event.toolName ?? "?", event.text);
-    const color = summary.isError ? "red" : "yellow";
-    const glyph = summary.isError ? ROLE_GLYPH.toolErr : ROLE_GLYPH.toolOk;
-    const marker = summary.isError ? "✗" : "→";
+    const status: "ok" | "err" = summary.isError ? "err" : "ok";
     const durationLabel =
       event.durationMs !== undefined && event.durationMs >= 100
-        ? ` (${formatDuration(event.durationMs)})`
+        ? formatDuration(event.durationMs)
         : "";
     const indexHint = event.toolIndex !== undefined ? `  /tool ${event.toolIndex}` : "";
     return (
       <Box>
-        <RoleGlyph glyph={glyph} color={color} />
-        <Text color={color} bold>{`  ${event.toolName ?? "?"}`}</Text>
-        {durationLabel ? <Text dimColor>{durationLabel}</Text> : null}
-        <Text color={color} dimColor>{`  ${marker}  `}</Text>
-        <Text color={summary.isError ? "red" : undefined} dimColor={!summary.isError}>
+        <ToolPill label={event.toolName ?? "?"} status={status} />
+        {durationLabel ? <Text dimColor>{`  ${durationLabel}`}</Text> : null}
+        <Text dimColor>{"  "}</Text>
+        <Text color={status === "err" ? "red" : undefined} dimColor={status === "ok"}>
           {summary.summary}
         </Text>
         {indexHint ? <Text dimColor>{indexHint}</Text> : null}

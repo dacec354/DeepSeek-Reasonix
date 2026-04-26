@@ -70,30 +70,49 @@ export function ModeStatusBar({
   if (planMode) {
     return (
       <Box paddingX={1}>
-        <Text color="red" bold inverse={flash}>
-          plan mode
-        </Text>
-        <Text dimColor>{"  writes gated · /plan off to leave"}</Text>
+        <ModePill label="PLAN MODE" bg="red" flash={flash} />
+        <Text dimColor>{"   writes gated · /plan off to leave"}</Text>
         {jobsTag}
       </Box>
     );
   }
-  const label = editMode === "auto" ? "auto" : "review";
-  const labelColor = editMode === "auto" ? "magenta" : "cyan";
-  const mid =
-    editMode === "auto"
-      ? "edits land now · u to undo"
-      : pendingCount > 0
-        ? `${pendingCount} queued · y apply · n discard`
-        : "edits queued · y apply · n discard";
+  const isAuto = editMode === "auto";
+  const label = isAuto ? "AUTO" : "REVIEW";
+  const bg = isAuto ? "magenta" : "cyan";
+  const mid = isAuto
+    ? "edits land now · u to undo"
+    : pendingCount > 0
+      ? `${pendingCount} queued · y apply · n discard`
+      : "edits queued · y apply · n discard";
   return (
     <Box paddingX={1}>
-      <Text color={labelColor} bold inverse={flash}>
-        {label}
-      </Text>
-      <Text dimColor>{`  ${mid} · Shift+Tab to flip`}</Text>
+      <ModePill label={label} bg={bg} flash={flash} />
+      <Text dimColor>{`   ${mid} · Shift+Tab to flip`}</Text>
       {jobsTag}
     </Box>
+  );
+}
+
+/**
+ * Solid-background mode badge so the bottom status bar reads at a
+ * glance like a real editor's modeline (vim/helix style) instead of a
+ * dim text label that blends into the prompt above. `flash` inverts
+ * briefly after a mode flip — the existing modeFlash signal — for a
+ * "yes, it changed" acknowledgement.
+ */
+function ModePill({
+  label,
+  bg,
+  flash,
+}: {
+  label: string;
+  bg: "magenta" | "cyan" | "red";
+  flash: boolean;
+}) {
+  return (
+    <Text backgroundColor={bg} color="white" bold inverse={flash}>
+      {` ${label} `}
+    </Text>
   );
 }
 
