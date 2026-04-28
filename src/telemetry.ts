@@ -84,6 +84,21 @@ export function outputCostUsd(model: string, usage: Usage): number {
   return (usage.completionTokens * p.output) / 1_000_000;
 }
 
+/**
+ * USD saved by DeepSeek's prompt-cache hits — the difference between
+ * paying miss-rate vs hit-rate for tokens that landed in the cache.
+ * Quantifies the value of the cache mechanic itself, separate from the
+ * vs-Claude story (which conflates cache benefit with model price gap).
+ *
+ * Returns 0 for unknown models or when nothing hit the cache.
+ */
+export function cacheSavingsUsd(model: string, hitTokens: number): number {
+  if (hitTokens <= 0) return 0;
+  const p = DEEPSEEK_PRICING[model];
+  if (!p) return 0;
+  return (hitTokens * (p.inputCacheMiss - p.inputCacheHit)) / 1_000_000;
+}
+
 export function claudeEquivalentCost(usage: Usage): number {
   return (
     (usage.promptTokens * CLAUDE_SONNET_PRICING.input +

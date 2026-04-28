@@ -154,18 +154,21 @@ function renderSubagentSection(sub: NonNullable<UsageAggregate["subagents"]>): s
 
 function header(): string {
   // Fixed column widths so alignment works in any TTY.
+  // `cache saved` reports DeepSeek's hit-vs-miss USD diff; the existing
+  // `saved` column is the % saved vs Claude-Sonnet equivalent.
   return [
     pad("", 10),
     pad("turns", 8, "right"),
     pad("cache hit", 10, "right"),
     pad("cost (USD)", 14, "right"),
+    pad("cache saved", 14, "right"),
     pad("vs Claude", 14, "right"),
     pad("saved", 10, "right"),
   ].join("  ");
 }
 
 function divider(): string {
-  return "-".repeat(70);
+  return "-".repeat(86);
 }
 
 function bucketRow(b: UsageBucket): string {
@@ -176,6 +179,11 @@ function bucketRow(b: UsageBucket): string {
     pad(b.turns.toString(), 8, "right"),
     pad(b.turns > 0 ? `${(hit * 100).toFixed(1)}%` : "—", 10, "right"),
     pad(b.turns > 0 ? `$${b.costUsd.toFixed(6)}` : "—", 14, "right"),
+    pad(
+      b.turns > 0 && b.cacheSavingsUsd > 0 ? `$${b.cacheSavingsUsd.toFixed(4)}` : "—",
+      14,
+      "right",
+    ),
     pad(b.turns > 0 ? `$${b.claudeEquivUsd.toFixed(4)}` : "—", 14, "right"),
     pad(b.turns > 0 && savings > 0 ? `${(savings * 100).toFixed(1)}%` : "—", 10, "right"),
   ].join("  ");

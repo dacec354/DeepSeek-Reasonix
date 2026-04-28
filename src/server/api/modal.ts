@@ -1,0 +1,117 @@
+/**
+ * `/api/modal` — read + resolve currently-active modals.
+ *
+ *   GET  /api/modal           → snapshot of the active modal (or null)
+ *   POST /api/modal/resolve   → submit a resolution choice
+ *
+ * The web Chat tab listens on `modal-up` / `modal-down` SSE events for
+ * realtime; this endpoint exists so a freshly-connected client can
+ * paint the modal that's already up.
+ *
+ * Resolution body is `{ kind: "shell"|"choice"|"plan"|"edit-review",
+ * choice: ... }` shaped per kind. Each kind dispatches to a separate
+ * resolve callback on `DashboardContext`; the App.tsx wiring routes
+ * those into the same handlers the TUI uses, so a click on the web
+ * modal is indistinguishable from a click in the terminal.
+ */
+
+import type { DashboardContext } from "../context.js";
+import type { ApiResult } from "../router.js";
+
+interface ResolveBody {
+  kind?: unknown;
+  choice?: unknown;
+  text?: unknown;
+}
+
+function parseBody(raw: string): ResolveBody {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null ? (parsed as ResolveBody) : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function handleModal(
+  method: string,
+  rest: string[],
+  body: string,
+  ctx: DashboardContext,
+): Promise<ApiResult> {
+  if (method === "GET" && rest.length === 0) {
+    return {
+      status: 200,
+      body: { modal: ctx.getActiveModal ? ctx.getActiveModal() : null },
+    };
+  }
+
+  if (method === "POST" && rest[0] === "resolve") {
+    const { kind, choice, text } = parseBody(body);
+    if (kind === "shell") {
+      if (!ctx.resolveShellConfirm) {
+        return { status: 503, body: { error: "shell modal resolution not wired" } };
+      }
+      if (choice !== "run_once" && choice !== "always_allow" && choice !== "deny") {
+        return {
+          status: 400,
+          body: { error: "shell choice must be run_once / always_allow / deny" },
+        };
+      }
+      ctx.resolveShellConfirm(choice);
+      return { status: 200, body: { resolved: true } };
+    }
+    if (kind === "choice") {
+      if (!ctx.resolveChoiceConfirm) {
+        return { status: 503, body: { error: "choice modal resolution not wired" } };
+      }
+      // The wire shape mirrors ChoiceResolution: { kind: "pick"|"custom"|"cancel", ... }.
+      const c = choice as Record<string, unknown> | undefined;
+      if (!c || typeof c !== "object") {
+        return { status: 400, body: { error: "choice must be an object with a kind field" } };
+      }
+      if (c.kind === "pick" && typeof c.optionId === "string") {
+        ctx.resolveChoiceConfirm({ kind: "pick", optionId: c.optionId });
+        return { status: 200, body: { resolved: true } };
+      }
+      if (c.kind === "custom" && typeof c.text === "string") {
+        ctx.resolveChoiceConfirm({ kind: "custom", text: c.text });
+        return { status: 200, body: { resolved: true } };
+      }
+      if (c.kind === "cancel") {
+        ctx.resolveChoiceConfirm({ kind: "cancel" });
+        return { status: 200, body: { resolved: true } };
+      }
+      return { status: 400, body: { error: "unknown choice resolution shape" } };
+    }
+    if (kind === "plan") {
+      if (!ctx.resolvePlanConfirm) {
+        return { status: 503, body: { error: "plan modal resolution not wired" } };
+      }
+      if (choice !== "approve" && choice !== "refine" && choice !== "cancel") {
+        return { status: 400, body: { error: "plan choice must be approve / refine / cancel" } };
+      }
+      ctx.resolvePlanConfirm(choice, typeof text === "string" && text.trim() ? text : undefined);
+      return { status: 200, body: { resolved: true } };
+    }
+    if (kind === "edit-review") {
+      if (!ctx.resolveEditReview) {
+        return { status: 503, body: { error: "edit-review modal resolution not wired" } };
+      }
+      if (
+        choice !== "apply" &&
+        choice !== "reject" &&
+        choice !== "apply-rest-of-turn" &&
+        choice !== "flip-to-auto"
+      ) {
+        return { status: 400, body: { error: "edit-review choice invalid" } };
+      }
+      ctx.resolveEditReview(choice);
+      return { status: 200, body: { resolved: true } };
+    }
+    return { status: 400, body: { error: `unknown modal kind: ${String(kind)}` } };
+  }
+
+  return { status: 405, body: { error: `method ${method} not supported on this path` } };
+}

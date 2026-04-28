@@ -386,8 +386,8 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
 // ---------- data helpers ----------
 
 function presetItems(): SelectItem<PresetName>[] {
-  return (["fast", "smart", "max"] as PresetName[]).map((name) => ({
-    value: name,
+  return (["auto", "flash", "pro"] as const).map((name) => ({
+    value: name as PresetName,
     label: `${name} — ${PRESET_DESCRIPTIONS[name].headline}`,
     hint: PRESET_DESCRIPTIONS[name].cost,
   }));

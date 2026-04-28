@@ -230,6 +230,81 @@ describe("bucket helpers", () => {
     );
     expect(bucketSavingsFraction(agg.buckets[0]!)).toBeCloseTo(0.9);
   });
+
+  it("cacheSavingsUsd accumulates per-record from current pricing", () => {
+    // 1000 hit tokens on chat → savings = 1000 * (miss - hit) / 1e6.
+    // We don't bake the constant; we trust the helper covered in
+    // telemetry.test.ts and just assert the bucket sums two records.
+    const agg = aggregateUsage(
+      [
+        {
+          ts: 1_700_000_000_000,
+          session: null,
+          model: "deepseek-chat",
+          promptTokens: 1000,
+          completionTokens: 0,
+          cacheHitTokens: 1000,
+          cacheMissTokens: 0,
+          costUsd: 0,
+          claudeEquivUsd: 0,
+        },
+        {
+          ts: 1_700_000_000_000 - 60_000,
+          session: null,
+          model: "deepseek-chat",
+          promptTokens: 500,
+          completionTokens: 0,
+          cacheHitTokens: 500,
+          cacheMissTokens: 0,
+          costUsd: 0,
+          claudeEquivUsd: 0,
+        },
+      ],
+      { now: 1_700_000_000_000 },
+    );
+    const today = agg.buckets[0]!;
+    // Two records, same model, 1500 hit tokens total.
+    expect(today.cacheSavingsUsd).toBeGreaterThan(0);
+    // Adding the savings for 1500 hit tokens of one record at the same
+    // model should match the sum.
+    const single = aggregateUsage(
+      [
+        {
+          ts: 1_700_000_000_000,
+          session: null,
+          model: "deepseek-chat",
+          promptTokens: 1500,
+          completionTokens: 0,
+          cacheHitTokens: 1500,
+          cacheMissTokens: 0,
+          costUsd: 0,
+          claudeEquivUsd: 0,
+        },
+      ],
+      { now: 1_700_000_000_000 },
+    );
+    expect(today.cacheSavingsUsd).toBeCloseTo(single.buckets[0]!.cacheSavingsUsd, 12);
+  });
+
+  it("cacheSavingsUsd is zero when nothing hit the cache", () => {
+    const agg = aggregateUsage(
+      [
+        {
+          ts: 1_700_000_000_000,
+          session: null,
+          model: "deepseek-chat",
+          promptTokens: 100,
+          completionTokens: 0,
+          cacheHitTokens: 0,
+          cacheMissTokens: 100,
+          costUsd: 0,
+          claudeEquivUsd: 0,
+        },
+      ],
+      { now: 1_700_000_000_000 },
+    );
+    expect(agg.buckets[0]!.cacheSavingsUsd).toBe(0);
+  });
 });
 
 describe("renderDashboard", () => {
@@ -256,6 +331,7 @@ describe("renderDashboard", () => {
     expect(out).toContain("month");
     expect(out).toContain("all-time");
     expect(out).toContain("cache hit");
+    expect(out).toContain("cache saved");
     expect(out).toContain("vs Claude");
     expect(out).toContain("most used model:");
     expect(out).toContain("top session:");

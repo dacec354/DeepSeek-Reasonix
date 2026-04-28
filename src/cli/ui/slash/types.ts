@@ -247,6 +247,19 @@ export interface SlashContext {
    * when nothing's pending, or the started-walk banner).
    */
   startWalkthrough?: () => string;
+  /**
+   * Boot the embedded web dashboard server attached to this session
+   * and return the human-readable info line to print (URL + token +
+   * "open in browser" hint). The handler implementation lives in
+   * App.tsx so it can capture the live loop / tools / MCP servers as
+   * the dashboard's data context. Returns the URL string on success
+   * for the slash to surface, or an Error to relay.
+   */
+  startDashboard?: () => Promise<string>;
+  /** Tear the dashboard server down. Mirrors stopLoop's shape; no-op when not running. */
+  stopDashboard?: () => Promise<void>;
+  /** Snapshot the dashboard's URL when running, null otherwise. */
+  getDashboardUrl?: () => string | null;
 }
 
 export interface McpServerSummary {

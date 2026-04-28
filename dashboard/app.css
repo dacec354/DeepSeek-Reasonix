@@ -1,0 +1,1837 @@
+/*
+ * Reasonix dashboard styles. Hand-rolled, no Tailwind — colors line
+ * up with src/cli/ui/theme.ts so the web surface reads as the same
+ * product as the TUI:
+ *
+ *   gradient (brand wordmark, accent rules) — teal → fuchsia
+ *   primary cyan          → focus / link / accent text
+ *   accent violet         → hover / pill backgrounds
+ *   slate scale           → backgrounds, borders, dim text
+ *
+ * Variables live in `:root` so future themes (light mode, alt brand)
+ * can swap them without touching component selectors.
+ */
+
+:root {
+  /* Brand gradient — lifted verbatim from theme.ts GRADIENT[]. */
+  --grad-1: #5eead4; /* teal */
+  --grad-2: #67e8f9; /* cyan */
+  --grad-3: #7dd3fc; /* sky */
+  --grad-4: #93c5fd; /* blue */
+  --grad-5: #a5b4fc; /* indigo */
+  --grad-6: #c4b5fd; /* violet */
+  --grad-7: #d8b4fe; /* purple */
+  --grad-8: #f0abfc; /* fuchsia */
+
+  /* Semantic palette mirrors COLOR{} from theme.ts. */
+  --primary: #67e8f9;
+  --accent: #c4b5fd;
+  --brand: #5eead4;
+
+  --user: #67e8f9;
+  --assistant: #86efac;
+  --tool: #fcd34d;
+  --tool-err: #fda4af;
+  --info: #94a3b8;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --ok: #4ade80;
+
+  /* Surfaces — terminal-dark background with subtle slate steps. */
+  --bg-0: #0a0e14;
+  --bg-1: #11161e;
+  --bg-2: #161c26;
+  --bg-3: #1f2733;
+  --bg-hover: rgba(103, 232, 249, 0.08);
+
+  --fg-0: #e2e8f0; /* slate-200 — body text */
+  --fg-1: #cbd5e1; /* slate-300 — primary text */
+  --fg-2: #94a3b8; /* slate-400 — secondary */
+  --fg-3: #64748b; /* slate-500 — dim */
+
+  --border: #1e2733;
+  --border-focus: var(--primary);
+
+  --gradient-rule: linear-gradient(
+    90deg,
+    var(--grad-1),
+    var(--grad-2),
+    var(--grad-3),
+    var(--grad-4),
+    var(--grad-5),
+    var(--grad-6),
+    var(--grad-7),
+    var(--grad-8)
+  );
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  height: 100%;
+}
+
+/* ---------- Animations ----------
+ *
+ * Conservative, opacity-led — no horizontal slides because messages
+ * land in a scrolling container and any non-y motion fights the
+ * auto-scroll. `prefers-reduced-motion` users get instant transitions.
+ */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes modal-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.chat-msg {
+  animation: fade-in 0.18s ease-out;
+}
+.modal-card {
+  animation: modal-slide-in 0.20s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-msg,
+  .modal-card {
+    animation: none;
+  }
+}
+
+/* ---------- Custom scrollbars ----------
+ *
+ * Default OS scrollbars look out of place against the dark TUI palette.
+ * WebKit (Chrome / Edge / Safari) gets the `::-webkit-scrollbar` route;
+ * Firefox uses `scrollbar-color` / `scrollbar-width`. Both render a thin
+ * slate thumb on the bg-0 background, with the accent violet on hover.
+ */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--bg-0);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 5px;
+  /* Border carves the thumb a hair thinner so it doesn't crowd the
+   * track; uses bg-0 so it visually merges with the background. */
+  border: 2px solid var(--bg-0);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+*::-webkit-scrollbar-corner {
+  background: var(--bg-0);
+}
+* {
+  scrollbar-color: var(--bg-3) var(--bg-0);
+  scrollbar-width: thin;
+}
+
+#root {
+  display: flex;
+  height: 100vh;
+}
+
+.boot {
+  margin: auto;
+  color: var(--fg-3);
+  font-family: var(--mono);
+}
+
+/* ---------- Layout: sidebar + main ---------- */
+
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-header {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-brand {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--fg-2);
+}
+
+.sidebar-brand .glyph {
+  background: var(--gradient-rule);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  font-size: 16px;
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+.sidebar-version {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-3);
+  font-family: var(--mono);
+}
+
+.sidebar-mode {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: var(--radius-sm);
+  background: var(--bg-3);
+  color: var(--accent);
+}
+
+.sidebar-tabs {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  cursor: pointer;
+  color: var(--fg-2);
+  font-size: 13px;
+  border-left: 2px solid transparent;
+  user-select: none;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--fg-0);
+}
+
+.tab.active {
+  background: var(--bg-2);
+  color: var(--primary);
+  border-left-color: var(--primary);
+}
+
+.tab-stub {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tab-stub:hover {
+  background: transparent;
+  color: var(--fg-2);
+}
+
+.tab .glyph {
+  width: 16px;
+  font-family: var(--mono);
+  text-align: center;
+}
+
+.tab .badge {
+  margin-left: auto;
+  font-size: 10px;
+  background: var(--bg-3);
+  color: var(--fg-3);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.sidebar-footer {
+  padding: 12px 20px;
+  font-size: 11px;
+  color: var(--fg-3);
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+}
+
+.gradient-rule {
+  height: 2px;
+  background: var(--gradient-rule);
+  margin: 0;
+}
+
+/* Hamburger that flips the mobile sidebar drawer. Pinned top-left of
+ * the main panel; hidden on desktop (sidebar is always visible there). */
+.menu-toggle {
+  display: none;
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 10;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg-1);
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.menu-toggle:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 20, 0.6);
+  z-index: 5;
+}
+
+@media (max-width: 800px) {
+  .menu-toggle {
+    display: block;
+  }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 8;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease-out;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
+  }
+  .sidebar.open {
+    transform: translateX(0);
+  }
+  .sidebar.open ~ .sidebar-backdrop {
+    display: block;
+  }
+  .main {
+    padding: 60px 16px 16px;
+    width: 100%;
+  }
+  .panel-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .header-pickers {
+    margin-left: 0 !important;
+    width: 100%;
+  }
+  .metric-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* ---------- Main panel ---------- */
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 36px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.panel-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.panel-subtitle {
+  color: var(--fg-2);
+  font-size: 13px;
+}
+
+.section-title {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin: 24px 0 12px;
+}
+
+/* ---------- Cards / metric tiles ---------- */
+
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+}
+
+.card-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-bottom: 6px;
+}
+
+.card-value {
+  font-family: var(--mono);
+  font-size: 22px;
+  color: var(--fg-0);
+}
+
+.card-value.muted {
+  color: var(--fg-3);
+}
+
+.card-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+/* Pill labels — mirror TUI accent bgs. */
+.pill {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-family: var(--mono);
+  border-radius: 999px;
+}
+
+.pill-primary {
+  background: rgba(103, 232, 249, 0.18);
+  color: var(--primary);
+}
+.pill-accent {
+  background: rgba(196, 181, 253, 0.18);
+  color: var(--accent);
+}
+.pill-ok {
+  background: rgba(74, 222, 128, 0.18);
+  color: var(--ok);
+}
+.pill-warn {
+  background: rgba(251, 191, 36, 0.18);
+  color: var(--warn);
+}
+.pill-err {
+  background: rgba(248, 113, 113, 0.18);
+  color: var(--err);
+}
+.pill-dim {
+  background: var(--bg-3);
+  color: var(--fg-2);
+}
+
+/* ---------- Tables ---------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+thead {
+  background: var(--bg-2);
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--fg-3);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-1);
+}
+
+tr:hover td {
+  background: var(--bg-hover);
+}
+
+td.numeric,
+th.numeric {
+  text-align: right;
+}
+
+td.muted {
+  color: var(--fg-3);
+}
+
+/* ---------- Inputs / buttons ---------- */
+
+button,
+.button {
+  background: var(--bg-2);
+  color: var(--fg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+button:hover,
+.button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+button.primary {
+  background: var(--primary);
+  color: var(--bg-0);
+  border-color: var(--primary);
+  font-weight: 500;
+}
+
+button.primary:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--bg-0);
+}
+
+button.danger {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+button.danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+input[type="text"],
+input[type="search"] {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg-0);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 13px;
+  width: 100%;
+}
+
+input[type="text"]:focus,
+input[type="search"]:focus,
+input[type="password"]:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+input[type="password"] {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg-0);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 13px;
+  width: 100%;
+}
+
+select {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg-0);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--sans);
+  font-size: 13px;
+  cursor: pointer;
+}
+select:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+textarea {
+  background: var(--bg-2);
+  color: var(--fg-0);
+  font-family: var(--mono);
+}
+textarea:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.row > input {
+  flex: 1;
+}
+
+/* ---------- Markdown rendering (matches TUI markdown.tsx palette) ----------
+ *
+ * Mapping comes from src/cli/ui/markdown.tsx:
+ *   H1 → bg #67e8f9 (cyan)   text black, bold     — pill
+ *   H2 → bg #c4b5fd (violet) text black, bold     — pill
+ *   H3 → bg #f0abfc (fuchsia) text black, bold    — pill
+ *   inline code → amber text on bg-2
+ *   code block  → bg-1, monospace, soft border
+ *   blockquote  → teal-300 left bar (brand)
+ *   strong / em → bold / italic
+ *   tables      → bordered, monospace
+ *   strike      → red strikethrough
+ *   link        → cyan underline
+ *   diff +/-    → green / red lines (handled by code-block class)
+ */
+
+.md {
+  color: var(--fg-0);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.md > *:first-child {
+  margin-top: 0;
+}
+.md > *:last-child {
+  margin-bottom: 0;
+}
+
+.md p {
+  margin: 0.5em 0;
+}
+
+.md h1,
+.md h2,
+.md h3 {
+  display: inline-block;
+  padding: 2px 10px;
+  margin: 0.8em 0 0.5em;
+  border-radius: var(--radius-sm);
+  color: #0a0e14;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.md h1 {
+  background: var(--primary);
+  font-size: 18px;
+}
+.md h2 {
+  background: var(--accent);
+  font-size: 16px;
+}
+.md h3 {
+  background: var(--grad-8);
+  font-size: 14px;
+}
+
+.md h4,
+.md h5,
+.md h6 {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 14px;
+  margin: 0.6em 0 0.3em;
+}
+
+.md strong {
+  color: var(--fg-0);
+  font-weight: 700;
+}
+.md em {
+  color: var(--fg-0);
+  font-style: italic;
+}
+.md del {
+  color: var(--err);
+  text-decoration: line-through;
+}
+
+.md a {
+  color: var(--primary);
+  text-decoration: none;
+}
+.md a:hover {
+  text-decoration: underline;
+}
+
+.md code {
+  font-family: var(--mono);
+  background: var(--bg-2);
+  color: var(--tool); /* amber matches TUI inline-code */
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.md pre {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0.6em 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--tool);
+  white-space: pre;
+}
+.md pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* Diff blocks — rendered by the custom renderer in app.js for
+ * SEARCH/REPLACE markers and ``` diff fences. Mirror TUI's
+ * markdown.tsx red/green palette so the experience reads as the same
+ * tool whether you're in the terminal or the browser. */
+.md .diff-block,
+.diff-block {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  margin: 0.6em 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--fg-1);
+}
+.diff-line {
+  display: block;
+  padding: 0 4px;
+}
+.diff-line.ins {
+  background: rgba(74, 222, 128, 0.1);
+  color: #86efac;
+}
+.diff-line.del {
+  background: rgba(248, 113, 113, 0.1);
+  color: #fda4af;
+}
+.diff-line.hunk {
+  color: var(--accent);
+  font-weight: 500;
+}
+.diff-line.meta {
+  color: var(--fg-3);
+}
+
+/* highlight.js github-dark loads from CDN; we tweak surface colors
+ * to merge with our card backgrounds. The theme provides token colors
+ * (keyword, string, number, comment etc.) we keep as-is — they read
+ * well against bg-1. */
+.md .hljs,
+.hljs {
+  background: var(--bg-1) !important;
+  color: var(--fg-0);
+  padding: 0;
+}
+.md pre code.hljs {
+  background: transparent !important;
+}
+
+.md ul,
+.md ol {
+  margin: 0.4em 0;
+  padding-left: 24px;
+}
+.md li {
+  margin: 0.15em 0;
+}
+.md ul > li::marker {
+  color: var(--brand);
+}
+.md ol > li::marker {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.md blockquote {
+  border-left: 3px solid var(--brand);
+  padding: 4px 12px;
+  margin: 0.6em 0;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.md table {
+  width: auto;
+  margin: 0.6em 0;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.md thead {
+  background: var(--bg-2);
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+.md th {
+  color: var(--primary);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.md td {
+  color: var(--fg-1);
+}
+
+.md hr {
+  border: none;
+  height: 2px;
+  background: var(--gradient-rule);
+  margin: 1.2em 0;
+  opacity: 0.6;
+}
+
+.md img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- Chat panel ---------- */
+
+.chat-shell {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px);
+}
+
+.chat-feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 4px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chat-msg {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  line-height: 1.6;
+}
+
+.chat-msg .glyph {
+  width: 22px;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  text-align: center;
+  font-size: 14px;
+  padding-top: 2px;
+}
+
+.chat-msg .body {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-msg.user .glyph {
+  color: var(--user);
+}
+.chat-msg.assistant .glyph {
+  color: var(--assistant);
+}
+.chat-msg.tool .glyph {
+  color: var(--tool);
+}
+.chat-msg.info .glyph {
+  color: var(--info);
+}
+.chat-msg.warning .glyph {
+  color: var(--warn);
+}
+.chat-msg.error .glyph {
+  color: var(--err);
+}
+
+.chat-msg.user .body {
+  color: var(--fg-0);
+}
+.chat-msg.assistant .body {
+  color: var(--fg-0);
+}
+/* Tool-card replaces the simple .body box for role="tool" rows. The
+ * card carries a left accent bar (amber for success), a header with
+ * tool name + path/lang pills, then the kind-specific body (diff for
+ * edit_file, code block for read/write_file, terminal for run_command,
+ * etc). Keeps the visual weight consistent across kinds. */
+.tool-card {
+  flex: 1;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--tool);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.tool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.tool-card-icon {
+  color: var(--tool);
+  font-size: 14px;
+  font-weight: 600;
+}
+.tool-card-name {
+  color: var(--accent);
+  font-weight: 500;
+}
+.tool-card-path {
+  color: var(--primary);
+  background: var(--bg-2);
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+.tool-card-path-link {
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: border-color 0.12s, background 0.12s;
+}
+.tool-card-path-link:hover {
+  border-color: var(--primary);
+  background: rgba(103, 232, 249, 0.12);
+}
+.tool-card pre,
+.tool-card .md {
+  margin: 0;
+}
+.tool-card .md > pre,
+.tool-card-cmd,
+.tool-card-output {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 320px;
+  overflow: auto;
+}
+.tool-card .md > pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+.tool-card .diff-block {
+  margin: 0;
+  max-height: 320px;
+}
+.tool-card-cmd {
+  background: var(--bg-0);
+  white-space: pre;
+  margin: 0 0 6px 0;
+}
+.tool-card-prompt {
+  color: var(--fg-3);
+  margin-right: 6px;
+}
+.tool-card-output {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-1);
+  margin: 0;
+}
+.tool-card-result {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--fg-3);
+  font-family: var(--mono);
+}
+.tool-card-args {
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+.tool-card-args summary {
+  cursor: pointer;
+  color: var(--fg-2);
+}
+.tool-card-args summary:hover {
+  color: var(--primary);
+}
+.tool-card-args pre {
+  margin-top: 6px;
+  white-space: pre;
+}
+
+.chat-msg .reasoning {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--bg-1);
+  border-left: 2px solid var(--accent);
+  color: var(--fg-2);
+  font-size: 12px;
+  font-style: italic;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: var(--radius-sm);
+}
+
+.chat-msg .tool-name {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.chat-streaming-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  background: var(--primary);
+  margin-left: 2px;
+  vertical-align: middle;
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.chat-input-area {
+  display: flex;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.chat-input-area textarea {
+  flex: 1;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg-0);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-family: var(--mono);
+  font-size: 13px;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 200px;
+}
+
+.chat-input-area textarea:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.chat-input-area textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--fg-3);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 40px 20px;
+}
+
+.chat-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+/* ---------- Chat status bar ----------
+ *
+ * Compact metric strip below the input area. Mirrors the TUI's
+ * StatsPanel (model · ctx · cache · turn $ · session $ · balance) so
+ * the user has the same one-glance read-out without leaving Chat.
+ */
+.chat-statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 8px 4px 0;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.status-label {
+  color: var(--fg-3);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.status-bar-mini {
+  display: inline-block;
+  width: 60px;
+  height: 4px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.status-bar-mini-fill {
+  display: block;
+  height: 100%;
+  background: var(--gradient-rule);
+}
+.status-ok {
+  color: var(--ok);
+}
+.status-warn {
+  color: var(--warn);
+}
+.status-err {
+  color: var(--err);
+}
+
+/* ---------- Header pickers (effort / preset / edit-mode) ----------
+ *
+ * Three segmented controls that flow on the chat header right side.
+ * On narrow screens they wrap onto multiple rows. The `accent` variant
+ * paints active segments violet (preset / effort) instead of cyan
+ * (edit-mode), so the three picker groups remain visually distinct.
+ */
+.header-pickers {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.mode-picker {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-1);
+}
+.mode-btn {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 4px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.mode-btn + .mode-btn {
+  border-left: 1px solid var(--border);
+}
+.mode-btn:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+.mode-btn.active {
+  background: var(--primary);
+  color: var(--bg-0);
+  font-weight: 600;
+}
+.mode-btn.active.accent {
+  background: var(--accent);
+  color: var(--bg-0);
+}
+.mode-btn.active.yolo {
+  background: var(--err);
+  color: var(--bg-0);
+}
+
+/* ---------- Modal cards (shell / choice / plan / edit-review) ----------
+ *
+ * Mirrors the TUI's ModalCard shape — left-accent border in the modal
+ * kind's color (red shell, magenta choice, cyan plan, green edits)
+ * with an icon, title, optional subtitle, then content + actions. The
+ * card sits above the chat input area, full-width within the chat
+ * column. Styled minimal so it doesn't compete with conversation
+ * content for attention.
+ */
+
+.modal-card {
+  margin: 12px 0;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-card-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.modal-card-icon {
+  font-size: 18px;
+  font-family: var(--mono);
+  line-height: 1.4;
+}
+
+.modal-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.modal-card-subtitle {
+  font-size: 12px;
+  color: var(--fg-2);
+  margin-top: 2px;
+}
+
+.modal-cmd {
+  background: var(--bg-2);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.modal-cmd-prompt {
+  color: var(--fg-3);
+  margin-right: 6px;
+}
+.modal-cmd code {
+  color: var(--primary);
+  background: transparent;
+  padding: 0;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.modal-choice-row {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  grid-template-rows: auto auto;
+  gap: 2px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.modal-choice-row:hover {
+  border-color: var(--accent);
+  background: rgba(196, 181, 253, 0.06);
+}
+.modal-choice-row.modal-choice-cancel {
+  margin-top: 4px;
+  border-style: dashed;
+}
+.modal-choice-id {
+  grid-row: 1 / 3;
+  align-self: center;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--accent);
+  font-weight: 600;
+  text-align: center;
+}
+.modal-choice-title {
+  color: var(--fg-0);
+  font-size: 13px;
+  font-weight: 500;
+}
+.modal-choice-summary {
+  color: var(--fg-2);
+  font-size: 12px;
+  grid-column: 2;
+}
+
+.modal-custom textarea {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg-0);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 13px;
+  resize: vertical;
+  min-height: 56px;
+}
+
+.modal-plan-body {
+  background: var(--bg-2);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.modal-edit-preview {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-1);
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 200px;
+}
+
+.muted {
+  color: var(--fg-3);
+}
+
+/* ---------- Toast ----------
+ * Ephemeral notifications stacked bottom-right of the viewport. Fired
+ * by save / network success paths instead of inline banners that push
+ * the form around. Auto-dismiss after 3 seconds. */
+.toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 50;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--fg-0);
+  font-family: var(--sans);
+  min-width: 200px;
+  max-width: 360px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  animation: toast-slide-in 0.18s ease-out;
+}
+.toast.warn {
+  border-left-color: var(--warn);
+}
+.toast.err {
+  border-left-color: var(--err);
+}
+.toast.info {
+  border-left-color: var(--accent);
+}
+
+/* ---------- Error overlay ----------
+ *
+ * Full-screen modal triggered by uncaught exceptions / promise
+ * rejections / Preact render errors. The TUI is unaffected — this
+ * only blocks the browser tab. Includes "Copy details" + a GitHub
+ * issue link prefilled with redacted environment info.
+ */
+.error-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 20, 0.85);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  z-index: 100;
+  animation: fade-in 0.18s ease-out;
+}
+.error-overlay-card {
+  max-width: 720px;
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--err);
+  border-left: 4px solid var(--err);
+  border-radius: var(--radius-md);
+  padding: 22px 26px;
+  box-shadow: 0 12px 60px rgba(248, 113, 113, 0.18);
+}
+.error-overlay-head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+.error-overlay-icon {
+  color: var(--err);
+  font-size: 22px;
+  font-weight: 700;
+}
+.error-overlay-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.error-overlay-subtitle {
+  font-size: 13px;
+  color: var(--fg-2);
+  font-family: var(--mono);
+  margin-top: 4px;
+  word-break: break-word;
+}
+.error-overlay-trace {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0 0 12px;
+}
+.error-overlay-info {
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--fg-2);
+  margin-bottom: 12px;
+}
+.error-overlay-help {
+  font-size: 13px;
+  color: var(--fg-1);
+  margin-bottom: 18px;
+  line-height: 1.55;
+}
+.error-overlay-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.error-overlay-actions a.button {
+  display: inline-block;
+  text-decoration: none;
+  background: var(--bg-2);
+  color: var(--fg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-family: var(--sans);
+  font-size: 12px;
+}
+.error-overlay-actions a.button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* ---------- Editor drawer ----------
+ *
+ * Sits to the right of the main panel. Hidden by default (width: 0,
+ * overflow hidden) so its DOM stays mounted and keeps its tab state.
+ * `.open` flips width to ~50% with a slide animation. On narrow
+ * viewports it covers the panel entirely (full-screen overlay).
+ */
+.editor-drawer-host {
+  flex-shrink: 0;
+  width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--bg-0);
+  transition: width 0.2s ease-out;
+}
+.editor-drawer-host.open {
+  width: 50%;
+  min-width: 360px;
+}
+
+.editor-drawer-head {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+  flex-shrink: 0;
+}
+.editor-drawer-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.editor-drawer-close {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-2);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.editor-drawer-close:hover {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+@media (max-width: 800px) {
+  .editor-drawer-host {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 0;
+    z-index: 7;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
+  }
+  .editor-drawer-host.open {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+/* ---------- Editor panel (CodeMirror multi-tab) ---------- */
+
+.editor-shell {
+  display: flex;
+  height: calc(100vh - 56px);
+  gap: 12px;
+  padding: 12px;
+}
+
+/* When the editor renders inside the right-side drawer, it follows
+ * the drawer's flex column instead of carrying its own viewport-tied
+ * height. Drawer-host gets `display: flex; flex-direction: column`
+ * via the descendant context. */
+.editor-drawer-host {
+  display: flex;
+  flex-direction: column;
+}
+.editor-drawer-host .editor-shell {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+.editor-side {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+.editor-files {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-1);
+}
+.editor-file {
+  padding: 5px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-2);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-file:hover {
+  background: var(--bg-hover);
+  color: var(--fg-0);
+}
+.editor-file.open {
+  color: var(--primary);
+  border-left-color: var(--primary);
+}
+
+.editor-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.editor-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+.editor-no-tabs {
+  padding: 10px 14px;
+  color: var(--fg-3);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.editor-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-top-left-radius: var(--radius-sm);
+  border-top-right-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.editor-tab:hover {
+  color: var(--fg-0);
+}
+.editor-tab.active {
+  background: var(--bg-2);
+  color: var(--primary);
+  border-bottom-color: var(--bg-2);
+}
+.editor-tab-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-tab-dirty {
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1;
+}
+.editor-tab-close {
+  margin-left: 4px;
+  color: var(--fg-3);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+}
+.editor-tab-close:hover {
+  background: var(--bg-3);
+  color: var(--err);
+}
+.editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+.editor-host {
+  flex: 1;
+  overflow: hidden;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-bottom-left-radius: var(--radius-md);
+  border-bottom-right-radius: var(--radius-md);
+}
+.editor-host .cm-editor {
+  height: 100%;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.editor-host .cm-scroller {
+  font-family: inherit;
+}
+.editor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-3);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+@media (max-width: 800px) {
+  .editor-shell {
+    flex-direction: column;
+    height: calc(100vh - 100px);
+  }
+  .editor-side {
+    width: 100%;
+    max-height: 200px;
+  }
+}
+
+/* ---------- Bars / charts ---------- */
+
+.bar {
+  background: var(--bg-3);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  height: 8px;
+  position: relative;
+}
+
+.bar > .fill {
+  height: 100%;
+  background: var(--gradient-rule);
+}
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Notice / banners ---------- */
+
+.notice {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--accent);
+  background: rgba(196, 181, 253, 0.06);
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--fg-1);
+}
+
+.notice.warn {
+  border-left-color: var(--warn);
+  background: rgba(251, 191, 36, 0.05);
+}
+
+.notice.err {
+  border-left-color: var(--err);
+  background: rgba(248, 113, 113, 0.05);
+  color: var(--err);
+}
+
+/* ---------- Code-ish inline ---------- */
+
+code,
+.mono {
+  font-family: var(--mono);
+  background: var(--bg-2);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--primary);
+}
+
+/* ---------- Empty state ---------- */
+
+.empty {
+  padding: 28px;
+  text-align: center;
+  color: var(--fg-3);
+  font-family: var(--mono);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}

@@ -25,55 +25,94 @@ import type { PresetName } from "../../config.js";
 export interface PresetSettings {
   model: string;
   /**
-   * Reasoning-effort cap sent per turn. `high` = shorter chain of
-   * thought (cheaper, faster); `max` = agent-class default (deeper,
-   * more output tokens). DeepSeek ignores this field on non-thinking
-   * calls, so it's safe to pin across models.
+   * Reasoning-effort cap. `high` = shorter chain of thought; `max` =
+   * agent-class default (deeper, more output). Effort is now decoupled
+   * from preset — a separate `/effort` knob lets users tune it
+   * orthogonally. The PRESETS table just picks the safest default.
    */
   reasoningEffort: "high" | "max";
   /**
-   * Pillar-2 plan-state extraction. Every preset ships `false` (see
-   * module header); kept in the shape so a user who later flips it on
-   * at runtime still round-trips cleanly. `/harvest on` toggles it.
+   * Auto-escalation switch. `auto` keeps the legacy NEEDS_PRO + failure
+   * threshold behavior; `flash` and `pro` lock to the chosen model.
    */
+  autoEscalate: boolean;
+  /** Pillar-2 harvest. Always false in presets — opt-in via /harvest. */
   harvest: boolean;
-  /**
-   * Branch budget. Every preset ships `1` (off). `/branch N` with
-   * N>=2 is the only way to enable self-consistency sampling.
-   */
+  /** Branch budget. Always 1 in presets — opt-in via /branch. */
   branch: number;
 }
 
-export const PRESETS: Record<PresetName, PresetSettings> = {
-  // fast — flash + effort=high. Quick Q&A, one-line tweaks, anything
-  // where shallow reasoning is enough. Cheapest turn possible.
-  fast: { model: "deepseek-v4-flash", reasoningEffort: "high", harvest: false, branch: 1 },
-  // smart — flash + effort=max. Full thinking budget on the cheap
-  // model. The default: handles 90%+ of coding work at a fraction
-  // of pro's cost.
-  smart: { model: "deepseek-v4-flash", reasoningEffort: "max", harvest: false, branch: 1 },
-  // max — pro + effort=max. Frontier model for hard tasks: cross-
-  // file architecture, subtle bug hunts, anything where flash's
-  // reasoning has measurably failed. ~12× per-token vs flash; save
-  // for when you need it, or use `/pro` to escalate a single turn.
-  max: { model: "deepseek-v4-pro", reasoningEffort: "max", harvest: false, branch: 1 },
+/**
+ * The three real presets. Old names (`fast / smart / max`) stay alive
+ * as aliases mapped through `resolvePreset` so a config.json that
+ * predates this rename still works without a migration script.
+ */
+export const PRESETS: Record<"auto" | "flash" | "pro", PresetSettings> = {
+  // auto — flash baseline + auto-escalate to pro when the model emits
+  // <<<NEEDS_PRO>>> OR after 3+ tool failure signals in one turn.
+  // The default: cheap when easy, smart when hard.
+  auto: {
+    model: "deepseek-v4-flash",
+    reasoningEffort: "max",
+    autoEscalate: true,
+    harvest: false,
+    branch: 1,
+  },
+  // flash — always flash, never escalate. `/pro` still arms a single
+  // manual turn; auto-promotion is the thing this disables. Use when
+  // you want predictable cost per turn.
+  flash: {
+    model: "deepseek-v4-flash",
+    reasoningEffort: "max",
+    autoEscalate: false,
+    harvest: false,
+    branch: 1,
+  },
+  // pro — always pro. Hard pin; the model never downgrades. Use for
+  // multi-turn architecture work where flash is just going to keep
+  // escalating anyway and the back-and-forth wastes turns.
+  pro: {
+    model: "deepseek-v4-pro",
+    reasoningEffort: "max",
+    autoEscalate: false,
+    harvest: false,
+    branch: 1,
+  },
 };
 
-export const PRESET_DESCRIPTIONS: Record<PresetName, { headline: string; cost: string }> = {
-  fast: {
-    headline: "v4-flash · effort=high",
-    cost: "cheapest · quick Q&A, one-line edits",
+export const PRESET_DESCRIPTIONS: Record<
+  "auto" | "flash" | "pro",
+  { headline: string; cost: string }
+> = {
+  auto: {
+    headline: "flash → pro on hard turns",
+    cost: "default · ~96% turns stay on flash · pro kicks in only when needed",
   },
-  smart: {
-    headline: "v4-flash · effort=max",
-    cost: "~1.5× fast · default · day-to-day coding",
+  flash: {
+    headline: "v4-flash always",
+    cost: "cheapest · predictable · /pro still works for a one-turn bump",
   },
-  max: {
-    headline: "v4-pro · effort=max",
-    cost: "~12× fast · hard single-shots · use /pro for a single-turn bump",
+  pro: {
+    headline: "v4-pro always",
+    cost: "~3× flash (5/31 discount) / ~12× full price · for hard multi-turn work",
   },
 };
 
+/**
+ * Resolve a preset name (canonical or unknown) to its settings.
+ * Anything that isn't `auto | flash | pro` — including the dropped
+ * legacy `fast / smart / max` aliases — collapses to `auto`. Simpler
+ * than mapping legacy values (each legacy name had its own semantics
+ * that don't 1:1 onto the new model-commitment vocabulary); auto is
+ * the safe default and the user can re-pick explicitly.
+ */
 export function resolvePreset(name: PresetName | undefined): PresetSettings {
-  return PRESETS[name ?? "smart"];
+  if (name === "auto" || name === "flash" || name === "pro") return PRESETS[name];
+  return PRESETS.auto;
+}
+
+/** Canonical name for storage / display — unknown values become auto. */
+export function canonicalPresetName(name: PresetName | undefined): "auto" | "flash" | "pro" {
+  if (name === "auto" || name === "flash" || name === "pro") return name;
+  return "auto";
 }

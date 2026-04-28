@@ -32,6 +32,7 @@ import type { Usage } from "./client.js";
 import {
   CLAUDE_SONNET_PRICING,
   DEEPSEEK_PRICING,
+  cacheSavingsUsd,
   claudeEquivalentCost,
   costUsd,
 } from "./telemetry.js";
@@ -174,6 +175,16 @@ export interface UsageBucket {
   cacheMissTokens: number;
   costUsd: number;
   claudeEquivUsd: number;
+  /**
+   * USD that DeepSeek's prompt cache shaved off the bill — sum of
+   * `cacheHitTokens × (missPrice − hitPrice)` per record. Recomputed
+   * from the current pricing table on every aggregate, not frozen at
+   * write time, so a price-cut announcement updates retroactively. The
+   * trade-off is mild inconsistency with `costUsd` (which IS frozen);
+   * acceptable because cache savings is a "what does this mechanism
+   * give me" narrative, not a billing record.
+   */
+  cacheSavingsUsd: number;
 }
 
 /** Cache hit ratio for a bucket — zero denominator returns 0. */
@@ -198,6 +209,7 @@ function emptyBucket(label: string, since: number): UsageBucket {
     cacheMissTokens: 0,
     costUsd: 0,
     claudeEquivUsd: 0,
+    cacheSavingsUsd: 0,
   };
 }
 
@@ -209,6 +221,7 @@ function addToBucket(b: UsageBucket, r: UsageRecord): void {
   b.cacheMissTokens += r.cacheMissTokens;
   b.costUsd += r.costUsd;
   b.claudeEquivUsd += r.claudeEquivUsd;
+  b.cacheSavingsUsd += cacheSavingsUsd(r.model, r.cacheHitTokens);
 }
 
 export interface AggregateOptions {

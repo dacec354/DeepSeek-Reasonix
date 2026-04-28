@@ -3,6 +3,131 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] — 2026-04-28
+
+**Headline:** Web dashboard. A top-tier local control plane that lives
+alongside the TUI — chat, files, MCP, skills, hooks, settings, all on
+one URL. Plus auto/flash/pro preset rework so model commitment is
+something you actually understand.
+
+### Web dashboard (`/dashboard` slash)
+
+A full-screen browser app, embedded HTTP server, 12 panels, modal
+mirroring back to the live TUI. 127.0.0.1 only, ephemeral token in
+the URL, CSRF on every mutation.
+
+**Foundation (v0.12 base)**
+- HTTP server in `src/server/` — Node native `http`, zero new deps
+- Token + CSRF auth, audit log per mutation
+- Preact 10 + HTM SPA (no build step), CSS lifted from `src/cli/ui/theme.ts`
+- 12 panels, all functional: Chat / Overview / Usage / Sessions /
+  Plans / Tools / Permissions / System / MCP / Skills / Memory /
+  Hooks / Settings
+
+**Chat parity (v0.13a)**
+- POST `/submit` routes through `handleSubmit` so slash commands,
+  `!cmd`, `@path` work identically; SSE `/events` streams loop
+  events live; `/abort` mirrors Esc; `/messages` snapshots the
+  log; `/modal/resolve` lets web pick a ShellConfirm /
+  ChoiceConfirm / PlanConfirm / EditConfirm — either surface
+  resolves, the other's modal disappears
+- Web: marked.js + highlight.js 38-language pack, GFM tables,
+  custom diff renderer for SEARCH/REPLACE blocks (red `-` / green
+  `+`) and unified diffs, kind-specific tool cards (edit_file,
+  read_file, write_file, run_command), markdown-styled assistant
+  messages with reasoning blockquote, blinking cursor while
+  streaming, scroll lock when user reads above bottom, custom
+  scrollbars in brand palette
+
+**Observability (v0.13b)**
+- Sessions browser — list / read any saved session
+- Plans archive — replay archived plans with risk pills
+- Usage time-series chart (uPlot) — daily cost / cache-saved / turns
+- System health — disk usage, version check, jobs
+
+**Mutation surface (v0.14)**
+- MCP — list bridged servers + add/remove specs to config
+- Skills — list, edit body, create new, delete
+- Memory — REASONIX.md + global / project private memory editor
+- Hooks — settings.json hook block editor + reload
+- Settings — API key (write-only), base URL, preset, effort, search
+
+**Polish (v0.15)**
+- Mobile responsive: sidebar collapses to drawer with hamburger,
+  metric grid drops to 2 columns, header stacks vertically
+- Animations: fade-in for messages, slide-in for modals + toasts,
+  `prefers-reduced-motion` respected
+- Toast system (top-right, auto-dismiss)
+- Global error overlay — `window.error` + `unhandledrejection` +
+  Preact ErrorBoundary all funnel into a full-screen card with
+  copy-details + "Report on GitHub" prefilled-issue button
+
+**Editor drawer (post-v0.15)**
+- Click any path in chat tool cards → CodeMirror 6 drawer slides
+  in from the right (50% width, full-screen on mobile)
+- Multi-tab, dirty flag, Cmd/Ctrl+S save, syntax highlighting in
+  14 languages, gitignore-aware file picker
+- Drawer state persists across sidebar tab switches
+
+**Live status bar (in Chat)**
+- model · ctx token gauge · cache hit % · turn cost · session
+  cost · DeepSeek balance — 2.5s poll, mirrors TUI StatsPanel
+
+**Live mode pickers (in Chat)**
+- Edit mode (review/auto/yolo) — instant
+- Effort (high/max) — applies next turn, also flippable from `/effort`
+- Preset (auto/flash/pro) — applies next turn via `applyPresetLive`
+- New / Clear conversation buttons (route through `/new` and `/clear`)
+
+### Preset rework — auto / flash / pro
+
+**Headline:** old `fast / smart / max` collapsed into model-commitment
+vocabulary that actually says what it does.
+
+- **`auto`** — flash baseline, auto-escalates to pro on
+  `<<<NEEDS_PRO>>>` markers or after 3+ tool failure signals.
+  The default — covers ~96% of turns at flash cost.
+- **`flash`** — flash always. No auto-escalation. `/pro` still
+  works for one-shot manual escalation.
+- **`pro`** — pro always. No downgrade. ~3× flash at the 5/31
+  discount window, ~12× outside it.
+
+`autoEscalate: boolean` added to the loop (constructor + reconfigure)
+gates both auto-escalation paths (NEEDS_PRO marker scavenge +
+failure-count threshold). `flash` and `pro` presets pass `false`,
+locking the running session to one model.
+
+Legacy `fast / smart / max` names: still parse from existing
+config files but collapse to `auto` — simpler than mapping the old
+semantics onto the new vocabulary, user re-picks if they want flash
+or pro explicitly.
+
+`applyPresetLive` callback in `DashboardContext` flips the live
+loop's model + autoEscalate + reasoningEffort the moment the user
+clicks a preset in the web Chat picker — no session restart.
+
+### Other
+
+- `cacheSavingsUsd(model, hitTokens)` in `src/telemetry.ts` — USD
+  the prompt cache shaved off the bill (miss-price minus hit-price
+  for cached tokens). Surfaced in `reasonix stats` dashboard +
+  `/api/usage` rolled buckets + the Usage chart.
+- Built-in shell allowlist (`BUILTIN_ALLOWLIST`) re-exported for
+  the dashboard's Permissions panel listing.
+- `removeProjectShellAllowed` + `clearProjectShellAllowed` in
+  `src/config.ts`.
+- StreamableHttpTransport (MCP 2025-03-26) — already shipped in
+  0.11.3 but documented here for completeness; this release adds
+  the Mcp panel UI on top.
+- `DashboardEvent` + `ActiveModal` types exported from
+  `src/server/context.ts` for downstream tooling.
+
+### Tests
+
+1568 vitest tests pass. New test files: `tests/server-dashboard.test.ts`
+(40 tests covering auth/CSRF, every endpoint shape, SSE round-trip,
+mid-modal mutations).
+
 ## [0.11.3] — 2026-04-27
 
 **Headline:** Two long-deferred items land — `/permissions` makes the

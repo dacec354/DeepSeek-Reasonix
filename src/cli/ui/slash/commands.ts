@@ -77,6 +77,12 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     argCompleter: ["list", "add", "remove", "clear"],
   },
   {
+    cmd: "dashboard",
+    argsHint: "[stop]",
+    summary: "launch the embedded web dashboard (127.0.0.1, token-gated)",
+    argCompleter: ["stop"],
+  },
+  {
     cmd: "cwd",
     argsHint: "<path>",
     summary:

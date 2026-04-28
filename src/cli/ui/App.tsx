@@ -21,8 +21,10 @@ import {
 } from "../../code/plan-store.js";
 import {
   type EditMode,
+  type PresetName,
   type ReasoningEffort,
   addProjectShellAllowed,
+  defaultConfigPath,
   editModeHintShown,
   loadEditMode,
   loadReasoningEffort,
@@ -33,7 +35,18 @@ import {
 import { type ResolvedHook, formatHookOutcomeMessage, loadHooks, runHooks } from "../../hooks.js";
 import { CacheFirstLoop, DeepSeekClient, ImmutablePrefix } from "../../index.js";
 import type { LoopEvent } from "../../loop.js";
-import type { SessionSummary } from "../../telemetry.js";
+import type {
+  ActiveModal,
+  DashboardEvent,
+  DashboardMessage,
+  SubmitResult,
+} from "../../server/context.js";
+import { type DashboardServerHandle, startDashboardServer } from "../../server/index.js";
+import {
+  DEEPSEEK_CONTEXT_TOKENS,
+  DEFAULT_CONTEXT_TOKENS,
+  type SessionSummary,
+} from "../../telemetry.js";
 import type { ToolRegistry } from "../../tools.js";
 import type { ChoiceOption } from "../../tools/choice.js";
 import type { PlanStep, StepCompletion } from "../../tools/plan.js";
@@ -43,7 +56,7 @@ import { formatSubagentResult, spawnSubagent } from "../../tools/subagent.js";
 import { webFetch } from "../../tools/web.js";
 import { registerWorkspaceTool } from "../../tools/workspace.js";
 import { openTranscriptFile, recordFromLoopEvent, writeRecord } from "../../transcript.js";
-import { appendUsage } from "../../usage.js";
+import { appendUsage, defaultUsageLogPath } from "../../usage.js";
 import { AtMentionSuggestions } from "./AtMentionSuggestions.js";
 import { ChoiceConfirm, type ChoiceConfirmChoice } from "./ChoiceConfirm.js";
 import { EditConfirm, type EditReviewChoice } from "./EditConfirm.js";
@@ -72,6 +85,7 @@ import { useKeystroke } from "./keystroke-context.js";
 import { formatLoopStatus } from "./loop.js";
 import { handleMcpBrowseSlash } from "./mcp-browse.js";
 import { formatLongPaste } from "./paste-collapse.js";
+import { resolvePreset } from "./presets.js";
 import { type McpServerSummary, handleSlash, parseSlash, suggestSlashCommands } from "./slash.js";
 import { TickerProvider } from "./ticker.js";
 import { useCompletionPickers } from "./useCompletionPickers.js";
@@ -356,6 +370,13 @@ export function App({
     editModeRef.current = editMode;
     if (codeMode) saveEditMode(editMode);
   }, [editMode, codeMode]);
+  // Refs that mirror state for stable read-callbacks handed to the
+  // embedded dashboard server. The server's `getXxx()` closures are
+  // captured once at startDashboard time; without ref-mirrors the
+  // returned values would freeze at boot. Same pattern as editModeRef.
+  const planModeRef = useRef<boolean>(false);
+  const currentRootDirRef = useRef<string>("");
+  const latestVersionRef = useRef<string | null>(null);
   // Current per-edit confirmation prompt (review mode, tool-call path).
   // Non-null → EditConfirm modal renders, interceptor is suspended on
   // `editReviewResolveRef.current`, other live rows hide. User picks a
@@ -553,6 +574,20 @@ export function App({
   // because the user wouldn't expect `/tool` to reach back across
   // process boundaries.
   const toolHistoryRef = useRef<Array<{ toolName: string; text: string }>>([]);
+  // Embedded dashboard server handle. Set when /dashboard boots; null
+  // otherwise. Mutations to this ref happen inside the start/stop
+  // callbacks; the slash handler uses getDashboardUrl() to surface
+  // the current state without triggering re-renders on every poll.
+  const dashboardRef = useRef<DashboardServerHandle | null>(null);
+  // SSE subscribers attached by /api/events. App.tsx fans out one
+  // DashboardEvent per loop event so the web Chat tab updates in
+  // sync with the TUI. The Set is keyed by the subscriber function
+  // itself; subscribeEvents returns an unsubscribe closure.
+  const eventSubscribersRef = useRef<Set<(ev: DashboardEvent) => void>>(new Set());
+  // Mirror of `historical` so /api/messages can snapshot synchronously
+  // without hopping through the React render scheduler. Update happens
+  // in a useEffect right after every state change.
+  const historicalRef = useRef<DisplayEvent[]>([]);
   // Structured steps captured from the most recent `submit_plan` call.
   // Populated only when the model supplied `steps`; used by the
   // `mark_step_complete` handler to look up the step title and compute
@@ -785,6 +820,129 @@ export function App({
     refreshModels,
     refreshLatestVersion,
   } = useSessionInfo(loop);
+
+  // Keep the dashboard-server ref-mirrors in sync with their state.
+  // These four are the load-bearing live reads for the attached
+  // dashboard's read APIs; without these mirrors the captured
+  // closures inside startDashboardServer freeze at boot time.
+  useEffect(() => {
+    planModeRef.current = planMode;
+  }, [planMode]);
+  useEffect(() => {
+    currentRootDirRef.current = currentRootDir;
+  }, [currentRootDir]);
+  useEffect(() => {
+    latestVersionRef.current = latestVersion ?? null;
+  }, [latestVersion]);
+  // Ref-mirror so getStats() (frozen at startDashboard time) sees fresh
+  // balance. useSessionInfo refreshes balance every few minutes; we
+  // forward to the dashboard without re-minting startDashboard.
+  const balanceRef = useRef<typeof balance>(null);
+  useEffect(() => {
+    balanceRef.current = balance;
+  }, [balance]);
+  useEffect(() => {
+    historicalRef.current = historical;
+  }, [historical]);
+
+  // Fan out a DashboardEvent to every web subscriber. No-op when
+  // nothing is connected, so the cost of the bridge in the common
+  // (no dashboard open) case is one Set.size lookup per event.
+  const broadcastDashboardEvent = useCallback((ev: DashboardEvent) => {
+    const subs = eventSubscribersRef.current;
+    if (subs.size === 0) return;
+    for (const h of subs) {
+      try {
+        h(ev);
+      } catch {
+        /* one bad subscriber must not stop the others */
+      }
+    }
+  }, []);
+
+  // Broadcast busy-state changes so the web Chat tab can disable its
+  // submit button while a turn is in flight. Mirrors what the TUI's
+  // `busy` flag already drives for PromptInput.
+  useEffect(() => {
+    broadcastDashboardEvent({ kind: "busy-change", busy });
+  }, [busy, broadcastDashboardEvent]);
+
+  // ---------- Modal mirroring (web parity for ShellConfirm / ChoiceConfirm /
+  // PlanConfirm / EditConfirm) ----------
+  //
+  // Each pending* state is the source of truth on the TUI side. These
+  // effects fan it out to web subscribers as `modal-up` events; the
+  // useEffect cleanup fires `modal-down` when the modal closes (the
+  // user picked from EITHER surface — once a pending state goes null
+  // the cleanup runs and both clients see it disappear).
+  //
+  // The shell + choice + plan paths are straightforward state→event.
+  // edit-review is different — its source of truth is `editReviewResolveRef`
+  // (a promise the dispatch interceptor is awaiting), wired via a
+  // separate `pendingEditReview` state that we already broadcast here.
+
+  useEffect(() => {
+    if (!pendingShell) return;
+    const modal: ActiveModal = {
+      kind: "shell",
+      command: pendingShell.command,
+      allowPrefix: derivePrefix(pendingShell.command),
+      shellKind: pendingShell.kind,
+    };
+    broadcastDashboardEvent({ kind: "modal-up", modal });
+    return () => {
+      broadcastDashboardEvent({ kind: "modal-down", modalKind: "shell" });
+    };
+  }, [pendingShell, broadcastDashboardEvent]);
+
+  useEffect(() => {
+    if (!pendingChoice) return;
+    const modal: ActiveModal = {
+      kind: "choice",
+      question: pendingChoice.question,
+      options: pendingChoice.options,
+      allowCustom: pendingChoice.allowCustom,
+    };
+    broadcastDashboardEvent({ kind: "modal-up", modal });
+    return () => {
+      broadcastDashboardEvent({ kind: "modal-down", modalKind: "choice" });
+    };
+  }, [pendingChoice, broadcastDashboardEvent]);
+
+  useEffect(() => {
+    if (!pendingPlan) return;
+    broadcastDashboardEvent({
+      kind: "modal-up",
+      modal: { kind: "plan", body: pendingPlan },
+    });
+    return () => {
+      broadcastDashboardEvent({ kind: "modal-down", modalKind: "plan" });
+    };
+  }, [pendingPlan, broadcastDashboardEvent]);
+
+  useEffect(() => {
+    if (!pendingEditReview) return;
+    // Trim the preview — full file diffs can be huge; web doesn't need
+    // a 200-line block in a modal. The TUI shows a fuller view because
+    // EditConfirm has its own scrollable region.
+    const previewLines = (pendingEditReview.search || pendingEditReview.replace || "")
+      .split("\n")
+      .slice(0, 12);
+    const preview = previewLines.join("\n");
+    broadcastDashboardEvent({
+      kind: "modal-up",
+      modal: {
+        kind: "edit-review",
+        path: pendingEditReview.path,
+        preview,
+        total: pendingEdits.current.length,
+        remaining: pendingEdits.current.length,
+      },
+    });
+    return () => {
+      broadcastDashboardEvent({ kind: "modal-down", modalKind: "edit-review" });
+    };
+  }, [pendingEditReview, broadcastDashboardEvent]);
 
   // Three mutually-exclusive input-prefix pickers (slash name, @ file
   // mention, slash argument) — state + memos + commit callbacks live
@@ -1488,6 +1646,245 @@ export function App({
     return `▸ walking ${pendingEdits.current.length} edit block(s) — y apply · n reject · a apply rest · A flip to AUTO · Esc cancels (keeps remaining queued).`;
   }, [codeMode]);
 
+  // Embedded dashboard server lifecycle. Boot is async (server has to
+  // bind a port + read static assets); the slash handler kicks this
+  // off and reads the URL out of `dashboardRef` once the promise
+  // resolves. Tear-down is also async but cheap — close drains
+  // in-flight requests within a 1s grace window.
+  const startDashboard = useCallback(async (): Promise<string> => {
+    if (dashboardRef.current) return dashboardRef.current.url;
+    const handle = await startDashboardServer({
+      mode: "attached",
+      configPath: defaultConfigPath(),
+      usageLogPath: defaultUsageLogPath(),
+      loop,
+      tools,
+      mcpServers,
+      getCurrentCwd: () => (codeMode ? currentRootDirRef.current : undefined),
+      getEditMode: () => (codeMode ? editModeRef.current : undefined),
+      getPlanMode: () => planModeRef.current,
+      getPendingEditCount: () => pendingEdits.current.length,
+      getLatestVersion: () => latestVersionRef.current,
+      getSessionName: () => session ?? null,
+      setEditMode: (m: EditMode) => {
+        setEditMode(m);
+        editModeRef.current = m;
+        saveEditMode(m);
+        return m;
+      },
+      setPlanMode: (on: boolean) => {
+        if (codeMode) togglePlanMode(on);
+      },
+      applyPresetLive: (name: string) => {
+        // Canonicalize legacy names + reach into the live loop so the
+        // change takes effect on the next turn (no session restart).
+        const settings = resolvePreset(name as PresetName);
+        loop.configure({
+          model: settings.model,
+          autoEscalate: settings.autoEscalate,
+          reasoningEffort: settings.reasoningEffort,
+        });
+      },
+      applyEffortLive: (effort) => {
+        loop.configure({ reasoningEffort: effort });
+      },
+      // ---------- Chat bridge ----------
+      getMessages: (): DashboardMessage[] => {
+        // Filter to roles the SPA cares about; map to the wire shape.
+        const out: DashboardMessage[] = [];
+        for (const ev of historicalRef.current) {
+          if (
+            ev.role === "user" ||
+            ev.role === "assistant" ||
+            ev.role === "info" ||
+            ev.role === "warning"
+          ) {
+            const msg: DashboardMessage = { id: ev.id, role: ev.role, text: ev.text };
+            if (ev.reasoning) msg.reasoning = ev.reasoning;
+            out.push(msg);
+          } else if (ev.role === "tool") {
+            const msg: DashboardMessage = {
+              id: ev.id,
+              role: "tool",
+              text: ev.text,
+              toolName: ev.toolName,
+            };
+            if (ev.toolArgs) msg.toolArgs = ev.toolArgs;
+            out.push(msg);
+          }
+        }
+        return out;
+      },
+      subscribeEvents: (handler) => {
+        eventSubscribersRef.current.add(handler);
+        return () => {
+          eventSubscribersRef.current.delete(handler);
+        };
+      },
+      submitPrompt: (text: string): SubmitResult => {
+        if (busyRef.current) {
+          return { accepted: false, reason: "loop is busy with a turn" };
+        }
+        const fn = handleSubmitRef.current;
+        if (!fn) return { accepted: false, reason: "TUI not ready" };
+        // Fire-and-forget — handleSubmit drives the loop event stream
+        // which the web sees via SSE. We don't await it here because
+        // a turn can take minutes; the HTTP request would time out.
+        fn(text).catch(() => undefined);
+        return { accepted: true };
+      },
+      abortTurn: () => {
+        if (busyRef.current) loop.abort();
+      },
+      isBusy: () => busyRef.current,
+      getStats: () => {
+        // Pull from the loop's live aggregator (same source the TUI's
+        // StatsPanel reads). `balance` comes from useSessionInfo via a
+        // ref-mirror so this callback stays cheap.
+        const s = loop.stats.summary();
+        const ctxCap = DEEPSEEK_CONTEXT_TOKENS[loop.model] ?? DEFAULT_CONTEXT_TOKENS;
+        return {
+          turns: s.turns,
+          totalCostUsd: s.totalCostUsd,
+          lastTurnCostUsd: s.lastTurnCostUsd,
+          totalInputCostUsd: s.totalInputCostUsd,
+          totalOutputCostUsd: s.totalOutputCostUsd,
+          cacheHitRatio: s.cacheHitRatio,
+          lastPromptTokens: s.lastPromptTokens,
+          contextCapTokens: ctxCap,
+          // useSessionInfo's Balance is a flat { currency, total }; the
+          // dashboard wire shape is the richer DeepSeek BalanceInfo
+          // array (granted / topped_up split). Convert as a single-
+          // entry array so the SPA always reads `balance[0]` shape.
+          balance: balanceRef.current
+            ? [
+                {
+                  currency: balanceRef.current.currency,
+                  total_balance: String(balanceRef.current.total),
+                },
+              ]
+            : null,
+        };
+      },
+      // ---------- Modal mirroring ----------
+      getActiveModal: (): ActiveModal | null => {
+        // Probe the live state via refs in priority order — only one
+        // modal can be up at a time per App invariant.
+        const ps = pendingShell;
+        if (ps) {
+          return {
+            kind: "shell",
+            command: ps.command,
+            allowPrefix: derivePrefix(ps.command),
+            shellKind: ps.kind,
+          };
+        }
+        const pc = pendingChoice;
+        if (pc) {
+          return {
+            kind: "choice",
+            question: pc.question,
+            options: pc.options,
+            allowCustom: pc.allowCustom,
+          };
+        }
+        if (pendingPlanRef.current) {
+          return { kind: "plan", body: pendingPlanRef.current };
+        }
+        const er = pendingEditReview;
+        if (er) {
+          return {
+            kind: "edit-review",
+            path: er.path,
+            preview: (er.search || er.replace || "").split("\n").slice(0, 12).join("\n"),
+            total: pendingEdits.current.length,
+            remaining: pendingEdits.current.length,
+          };
+        }
+        return null;
+      },
+      resolveShellConfirm: (choice) => {
+        const fn = handleShellConfirmRef.current;
+        if (fn) fn(choice).catch(() => undefined);
+      },
+      resolveChoiceConfirm: (choice) => {
+        const fn = handleChoiceConfirmRef.current;
+        if (fn) fn(choice).catch(() => undefined);
+      },
+      resolvePlanConfirm: (choice, text) => {
+        if (choice === "cancel") {
+          handlePlanConfirmRef.current("cancel").catch(() => undefined);
+          return;
+        }
+        const plan = pendingPlanRef.current ?? "";
+        // Bypass the picker → input two-step on web. The override
+        // form of handleStagedInputSubmit takes the plan + mode
+        // directly; behaviour matches the TUI's "user typed feedback +
+        // pressed Enter" path.
+        handleStagedInputSubmitRef
+          .current(text ?? "", { plan, mode: choice })
+          .catch(() => undefined);
+      },
+      resolveEditReview: (choice) => {
+        const resolve = editReviewResolveRef.current;
+        if (resolve) {
+          editReviewResolveRef.current = null;
+          setPendingEditReview(null);
+          resolve(choice);
+        }
+      },
+      // ---------- v0.14 mutation surface ----------
+      reloadHooks: () => {
+        const fresh = loadHooks({ projectRoot: codeMode ? currentRootDirRef.current : undefined });
+        setHookList(fresh);
+        return fresh.length;
+      },
+    });
+    dashboardRef.current = handle;
+    return handle.url;
+  }, [
+    loop,
+    tools,
+    mcpServers,
+    codeMode,
+    session,
+    togglePlanMode,
+    pendingShell,
+    pendingChoice,
+    pendingEditReview,
+  ]);
+
+  const stopDashboard = useCallback(async (): Promise<void> => {
+    const h = dashboardRef.current;
+    if (!h) return;
+    dashboardRef.current = null;
+    try {
+      await h.close();
+    } catch {
+      /* swallow — server going down is best-effort */
+    }
+    setHistorical((prev) => [
+      ...prev,
+      { id: `dash-stop-${Date.now()}`, role: "info", text: "▸ dashboard stopped." },
+    ]);
+  }, []);
+
+  const getDashboardUrl = useCallback((): string | null => {
+    return dashboardRef.current?.url ?? null;
+  }, []);
+
+  // Tear the dashboard down on unmount so the port doesn't leak when
+  // the TUI exits via /exit, Ctrl+C, etc.
+  useEffect(() => {
+    return () => {
+      const h = dashboardRef.current;
+      if (h) {
+        dashboardRef.current = null;
+        h.close().catch(() => undefined);
+      }
+    };
+  }, []);
+
   /**
    * onChoose for the walkthrough EditConfirm. Each pick mutates
    * pendingEdits via the existing codeApply/codeDiscard helpers, which
@@ -1765,6 +2162,9 @@ export function App({
           stopLoop,
           getLoopStatus,
           startWalkthrough: codeMode ? startWalkthrough : undefined,
+          startDashboard,
+          stopDashboard,
+          getDashboardUrl,
           jobs: codeMode?.jobs,
           postInfo: (text: string) =>
             setHistorical((prev) => [
@@ -1918,6 +2318,8 @@ export function App({
           leadSeparator: prev.length > 0,
         },
       ]);
+      const userId = `u-${Date.now()}`;
+      broadcastDashboardEvent({ kind: "user", id: userId, text });
 
       const assistantId = `a-${Date.now()}`;
       // Refs are the source of truth for accumulated streaming text; the React
@@ -2063,6 +2465,47 @@ export function App({
       try {
         for await (const ev of loop.step(modelInput)) {
           writeTranscript(ev);
+          // Mirror to dashboard SSE subscribers. Done at the top of
+          // the iteration so the web sees the same sequence the TUI
+          // about to render — keeps the two surfaces in lockstep.
+          // Only the role values the web understands; transient ones
+          // (status, branch_*, tool_call_delta) are skipped to keep
+          // the wire chatter low.
+          if (eventSubscribersRef.current.size > 0) {
+            const id = `${assistantId}-${ev.role}-${Date.now()}`;
+            if (ev.role === "assistant_delta") {
+              broadcastDashboardEvent({
+                kind: "assistant_delta",
+                id: assistantId,
+                contentDelta: ev.content || undefined,
+                reasoningDelta: ev.reasoningDelta,
+              });
+            } else if (ev.role === "tool_start" && ev.toolName) {
+              broadcastDashboardEvent({
+                kind: "tool_start",
+                id,
+                toolName: ev.toolName,
+                args: ev.toolArgs,
+              });
+            } else if (ev.role === "tool" && ev.toolName) {
+              broadcastDashboardEvent({
+                kind: "tool",
+                id,
+                toolName: ev.toolName,
+                content: ev.content,
+                args: ev.toolArgs,
+              });
+            } else if (ev.role === "warning") {
+              broadcastDashboardEvent({ kind: "warning", id, text: ev.content });
+            } else if (ev.role === "error") {
+              broadcastDashboardEvent({ kind: "error", id, text: ev.content });
+            } else if (ev.role === "status") {
+              // Transient hints (between tool result and next iter,
+              // pre-harvest) — surfaces the same "what's happening
+              // right now" context the TUI's status line shows.
+              broadcastDashboardEvent({ kind: "status", text: ev.content });
+            }
+          }
           // Status lines are transient — any primary event (streaming
           // starts, a tool fires, etc.) means whatever we were waiting
           // FOR has now arrived, so drop the hint. We do this uniformly
@@ -2109,6 +2552,16 @@ export function App({
             flush();
             const repairNote = ev.repair ? describeRepair(ev.repair) : "";
             setStreaming(null);
+            // Broadcast the final to web subscribers. flush() already
+            // moved contentBuf → streamRef.text and emptied contentBuf,
+            // so we read from streamRef (mirrors what the TUI's own
+            // historical-push uses below: `ev.content || streamRef.text`).
+            broadcastDashboardEvent({
+              kind: "assistant_final",
+              id: assistantId,
+              text: ev.content || streamRef.text,
+              reasoning: streamRef.reasoning || undefined,
+            });
             // Update the live stats panel every assistant_final — this is
             // where the loop already recorded per-iter usage. Without
             // this, cost/ctx/cache/hit stay at the PRIOR turn's numbers
@@ -2258,6 +2711,7 @@ export function App({
                   role: "tool",
                   text: ev.content,
                   toolName: ev.toolName,
+                  toolArgs: ev.toolArgs,
                   toolIndex,
                   durationMs,
                 },
@@ -2609,6 +3063,10 @@ export function App({
       startLoop,
       getLoopStatus,
       startWalkthrough,
+      startDashboard,
+      stopDashboard,
+      getDashboardUrl,
+      broadcastDashboardEvent,
       applyCwdChange,
     ],
   );
@@ -2933,9 +3391,18 @@ export function App({
    * included verbatim.
    */
   const handleStagedInputSubmit = useCallback(
-    async (feedback: string) => {
-      const staged = stagedInput;
-      setStagedInput(null);
+    async (feedback: string, override?: { plan: string; mode: "refine" | "approve" }) => {
+      // `override` lets the web `/dashboard` chat-bridge drive the same
+      // dispatch path without first having to setStagedInput() (which
+      // is async and would race the read below). When the override is
+      // present we also clear pendingPlan ourselves since web flow
+      // doesn't go through the picker → input two-step.
+      const staged = override ?? stagedInput;
+      if (override) {
+        setPendingPlan(null);
+      } else {
+        setStagedInput(null);
+      }
       if (!staged) return;
       const trimmed = feedback.trim();
 
@@ -2976,6 +3443,13 @@ export function App({
     },
     [stagedInput, togglePlanMode, busy, loop, handleSubmit],
   );
+  // Ref-mirror so startDashboard's resolvePlanConfirm closure can call
+  // the latest function — handleStagedInputSubmit's deps churn on every
+  // stagedInput change, which would freeze a captured reference.
+  const handleStagedInputSubmitRef = useRef(handleStagedInputSubmit);
+  useEffect(() => {
+    handleStagedInputSubmitRef.current = handleStagedInputSubmit;
+  }, [handleStagedInputSubmit]);
 
   /** Esc on the inline input — restore the picker without resuming. */
   const handleStagedInputCancel = useCallback(() => {
@@ -3117,6 +3591,21 @@ export function App({
 
   // Ref-wrap to keep ChoiceConfirm's React.memo from re-rendering on
   // every parent tick (same pattern as PlanConfirm / CheckpointConfirm).
+  // Stable refs over the modal handlers — used by the web chat-bridge
+  // to drive the same code path as a TUI button click without
+  // dragging the handlers (and their ever-shifting deps) into
+  // startDashboard's useCallback closure.
+  const handleShellConfirmRef = useRef(handleShellConfirm);
+  useEffect(() => {
+    handleShellConfirmRef.current = handleShellConfirm;
+  }, [handleShellConfirm]);
+  // Ref-mirror of pendingPlan so the web's resolvePlanConfirm callback
+  // (registered in startDashboard, frozen at boot) can read the live
+  // body when the web resolves an approve/refine.
+  const pendingPlanRef = useRef<string | null>(null);
+  useEffect(() => {
+    pendingPlanRef.current = pendingPlan;
+  }, [pendingPlan]);
   const handleChoiceConfirmRef = useRef(handleChoiceConfirm);
   useEffect(() => {
     handleChoiceConfirmRef.current = handleChoiceConfirm;

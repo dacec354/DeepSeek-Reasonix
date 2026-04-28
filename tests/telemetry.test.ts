@@ -3,6 +3,7 @@ import { Usage } from "../src/client.js";
 import {
   DEEPSEEK_PRICING,
   SessionStats,
+  cacheSavingsUsd,
   costUsd,
   inputCostUsd,
   outputCostUsd,
@@ -130,5 +131,34 @@ describe("inputCostUsd / outputCostUsd", () => {
     const u = new Usage(1000, 100, 1100, 800, 200);
     expect(inputCostUsd("unknown", u)).toBe(0);
     expect(outputCostUsd("unknown", u)).toBe(0);
+  });
+});
+
+describe("cacheSavingsUsd", () => {
+  it("returns hit-vs-miss USD diff for the given model + hit token count", () => {
+    const hit = 1000;
+    const expected = (hit * (CHAT.inputCacheMiss - CHAT.inputCacheHit)) / 1_000_000;
+    expect(cacheSavingsUsd("deepseek-chat", hit)).toBeCloseTo(expected, 12);
+  });
+
+  it("returns 0 when hit tokens are zero", () => {
+    expect(cacheSavingsUsd("deepseek-chat", 0)).toBe(0);
+  });
+
+  it("returns 0 for negative input (defensive — never bills negative)", () => {
+    expect(cacheSavingsUsd("deepseek-chat", -100)).toBe(0);
+  });
+
+  it("returns 0 for an unknown model", () => {
+    expect(cacheSavingsUsd("never-shipped-model", 1000)).toBe(0);
+  });
+
+  it("v4-pro savings per hit token are larger than v4-flash (bigger miss/hit gap)", () => {
+    // Pro's miss-to-hit gap dwarfs Flash's, so each cached pro token
+    // saves more in absolute terms — useful sanity check that we picked
+    // the right side of the subtraction.
+    const flashSave = cacheSavingsUsd("deepseek-v4-flash", 1000);
+    const proSave = cacheSavingsUsd("deepseek-v4-pro", 1000);
+    expect(proSave).toBeGreaterThan(flashSave);
   });
 });

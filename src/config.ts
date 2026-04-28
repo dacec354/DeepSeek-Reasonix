@@ -18,8 +18,21 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-/** One of the preset bundles (model + harvest + branch combo). */
-export type PresetName = "fast" | "smart" | "max";
+/**
+ * Preset names — three model-commitment levels.
+ *   - `auto`  — flash baseline + auto-escalate to pro on hard turns
+ *               (NEEDS_PRO marker / failure-count threshold both fire).
+ *               Default. Closest match to the legacy `smart` preset.
+ *   - `flash` — flash always. No auto-escalation. `/pro` still works
+ *               for one-shot manual escalation. Cheapest predictable.
+ *   - `pro`   — pro always. No downgrade. ~3× cost vs flash at the
+ *               2026-04 discount rate; more outside the window.
+ *
+ * Legacy `fast | smart | max` names stay in the union for back-compat
+ * with existing `~/.reasonix/config.json` files; resolvePreset() maps
+ * them to the new semantics.
+ */
+export type PresetName = "auto" | "flash" | "pro" | "fast" | "smart" | "max";
 
 /**
  * How `reasonix code` handles model-issued tool calls. Two axes folded

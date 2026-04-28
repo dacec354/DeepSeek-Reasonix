@@ -14,7 +14,7 @@
  */
 
 import { type PresetName, type ReasonixConfig, readConfig } from "../config.js";
-import { PRESETS } from "./ui/presets.js";
+import { resolvePreset } from "./ui/presets.js";
 
 export interface ResolvedDefaults {
   model: string;
@@ -42,7 +42,7 @@ export interface RawCliFlags {
 export function resolveDefaults(flags: RawCliFlags): ResolvedDefaults {
   const cfg: ReasonixConfig = flags.noConfig ? {} : readConfig();
   const preset = pickPreset(flags.preset, cfg.preset);
-  const presetSettings = PRESETS[preset];
+  const presetSettings = resolvePreset(preset);
 
   const model = flags.model ?? presetSettings.model;
   const reasoningEffort = presetSettings.reasoningEffort;
@@ -66,11 +66,20 @@ function pickPreset(
 ): PresetName {
   if (flagPreset && isPresetName(flagPreset)) return flagPreset;
   if (configPreset) return configPreset;
-  return "smart";
+  return "auto";
 }
 
 function isPresetName(s: string): s is PresetName {
-  return s === "fast" || s === "smart" || s === "max";
+  return (
+    s === "auto" ||
+    s === "flash" ||
+    s === "pro" ||
+    // Legacy names — kept callable so old `--preset smart` invocations
+    // and stale config.json entries don't error out.
+    s === "fast" ||
+    s === "smart" ||
+    s === "max"
+  );
 }
 
 function normalizeBranch(raw: number | undefined): number | undefined {

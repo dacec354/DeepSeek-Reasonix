@@ -1,0 +1,157 @@
+/**
+ * `/api/settings` — read + mutate persistent config.
+ *
+ *   GET  /api/settings  → { apiKey: redacted, baseUrl, preset,
+ *                           reasoningEffort, search, model, sessions }
+ *   POST /api/settings  { apiKey?, baseUrl?, preset?, reasoningEffort?,
+ *                         search? }
+ *
+ * Field-level rules:
+ *   - apiKey: write-only on the wire. GET returns a redacted form
+ *     (`sk-abcd…wxyz`), never the raw value, so a screenshot of the
+ *     dashboard doesn't leak credentials. POST accepts a fresh key
+ *     (validated via isPlausibleKey).
+ *   - baseUrl: free-form string; restart needed.
+ *   - preset / reasoningEffort: persisted; some take effect next turn,
+ *     some next session — the SPA shows a hint per field.
+ *   - search: persisted; takes effect next session (tools registered
+ *     at start).
+ *
+ * Mutations write through `writeConfig` which chmod 600s the file.
+ * Audit hook fires per field changed.
+ */
+
+import {
+  isPlausibleKey,
+  readConfig,
+  redactKey,
+  saveApiKey,
+  saveEditMode,
+  saveReasoningEffort,
+  writeConfig,
+} from "../../config.js";
+import type { DashboardContext } from "../context.js";
+import type { ApiResult } from "../router.js";
+
+interface SettingsBody {
+  apiKey?: unknown;
+  baseUrl?: unknown;
+  preset?: unknown;
+  reasoningEffort?: unknown;
+  search?: unknown;
+}
+
+function parseBody(raw: string): SettingsBody {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null ? (parsed as SettingsBody) : {};
+  } catch {
+    return {};
+  }
+}
+
+// Accept new (auto/flash/pro) and legacy (fast/smart/max) — server
+// stores whatever the user picked; resolvePreset() canonicalizes at
+// read time. Web sends new names in 0.12.x onward.
+const VALID_PRESETS = new Set(["auto", "flash", "pro", "fast", "smart", "max"]);
+const VALID_EFFORTS = new Set(["high", "max"]);
+
+export async function handleSettings(
+  method: string,
+  _rest: string[],
+  body: string,
+  ctx: DashboardContext,
+): Promise<ApiResult> {
+  if (method === "GET") {
+    const cfg = readConfig(ctx.configPath);
+    return {
+      status: 200,
+      body: {
+        apiKey: cfg.apiKey ? redactKey(cfg.apiKey) : null,
+        apiKeySet: Boolean(cfg.apiKey),
+        baseUrl: cfg.baseUrl ?? null,
+        preset: cfg.preset ?? "auto",
+        reasoningEffort: cfg.reasoningEffort ?? "max",
+        search: cfg.search !== false,
+        editMode: cfg.editMode ?? "review",
+        session: cfg.session ?? null,
+        model: ctx.loop?.model ?? null,
+        // Hint to the SPA which fields require restart.
+        appliesAt: {
+          apiKey: "next-session",
+          baseUrl: "next-session",
+          preset: "next-session",
+          reasoningEffort: "next-turn",
+          search: "next-session",
+        },
+      },
+    };
+  }
+
+  if (method === "POST") {
+    const fields = parseBody(body);
+    const cfg = readConfig(ctx.configPath);
+    const changed: string[] = [];
+
+    if (fields.apiKey !== undefined) {
+      if (typeof fields.apiKey !== "string" || !isPlausibleKey(fields.apiKey)) {
+        return { status: 400, body: { error: "apiKey must be a plausible sk- token" } };
+      }
+      // saveApiKey reads + writes the entire file with chmod 600.
+      saveApiKey(fields.apiKey, ctx.configPath);
+      changed.push("apiKey");
+    }
+    if (fields.baseUrl !== undefined) {
+      if (typeof fields.baseUrl !== "string" || !fields.baseUrl.trim()) {
+        return { status: 400, body: { error: "baseUrl must be a non-empty string" } };
+      }
+      cfg.baseUrl = fields.baseUrl.trim();
+      writeConfig(cfg, ctx.configPath);
+      changed.push("baseUrl");
+    }
+    if (fields.preset !== undefined) {
+      if (typeof fields.preset !== "string" || !VALID_PRESETS.has(fields.preset)) {
+        return { status: 400, body: { error: "preset must be auto | flash | pro" } };
+      }
+      cfg.preset = fields.preset as "auto" | "flash" | "pro" | "fast" | "smart" | "max";
+      writeConfig(cfg, ctx.configPath);
+      // Apply to the LIVE loop too so the user doesn't have to restart
+      // their session to feel the change. The callback canonicalizes
+      // legacy aliases via resolvePreset internally.
+      ctx.applyPresetLive?.(fields.preset);
+      changed.push("preset");
+    }
+    if (fields.reasoningEffort !== undefined) {
+      if (
+        typeof fields.reasoningEffort !== "string" ||
+        !VALID_EFFORTS.has(fields.reasoningEffort)
+      ) {
+        return { status: 400, body: { error: "reasoningEffort must be high | max" } };
+      }
+      saveReasoningEffort(fields.reasoningEffort as "high" | "max", ctx.configPath);
+      ctx.applyEffortLive?.(fields.reasoningEffort as "high" | "max");
+      changed.push("reasoningEffort");
+    }
+    if (fields.search !== undefined) {
+      if (typeof fields.search !== "boolean") {
+        return { status: 400, body: { error: "search must be a boolean" } };
+      }
+      cfg.search = fields.search;
+      writeConfig(cfg, ctx.configPath);
+      changed.push("search");
+    }
+
+    if (changed.length > 0) {
+      ctx.audit?.({ ts: Date.now(), action: "set-settings", payload: { fields: changed } });
+    }
+    return { status: 200, body: { changed } };
+  }
+
+  return { status: 405, body: { error: "GET or POST only" } };
+}
+
+// Keep saveEditMode imported so future GET responses can include the
+// canonical default — used by the SPA when /api/overview hasn't yet
+// resolved. (Currently surfaced via /api/overview directly.)
+void saveEditMode;

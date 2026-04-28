@@ -58,6 +58,14 @@ export interface DisplayEvent {
   branchProgress?: BranchProgress;
   toolName?: string;
   /**
+   * Raw JSON args the model passed to the tool. Carried through so the
+   * web dashboard's snapshot endpoint can reconstruct the same
+   * tool-specific rendering (edit_file diff, write_file content, etc)
+   * the live SSE channel already provides. Not used by the Ink TUI
+   * directly — it shows the args via OngoingToolRow / tool-summary.
+   */
+  toolArgs?: string;
+  /**
    * 1-based position in the session's tool-call history. Rendered as a
    * dim `/tool N` suffix on compact rows so the user can quickly jump
    * to the full output via the existing `/tool` slash command.

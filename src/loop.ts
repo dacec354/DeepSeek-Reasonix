@@ -220,6 +220,12 @@ export interface CacheFirstLoopOptions {
    */
   reasoningEffort?: "high" | "max";
   /**
+   * Master switch for auto-escalation paths. See ReconfigurableOptions
+   * — defaults to `true` (current behavior); the `flash` and `pro`
+   * presets pass `false` to lock the running session to one model.
+   */
+  autoEscalate?: boolean;
+  /**
    * Session name. When set, the loop pre-loads the session's prior messages
    * into its log on construction, and appends every new log entry to
    * `~/.reasonix/sessions/<name>.jsonl` so the next run can resume.
@@ -264,6 +270,15 @@ export interface ReconfigurableOptions {
    * mid-session for cheaper, faster turns on simple tasks.
    */
   reasoningEffort?: "high" | "max";
+  /**
+   * Master switch for the auto-escalation paths — both the
+   * `<<<NEEDS_PRO>>>` marker scavenge and the failure-count threshold.
+   * `true` (default) preserves the original "flash baseline, jump to
+   * pro when struggling" behavior. `false` locks the active turn to
+   * whatever `model` is set to — used by the `flash` and `pro` presets
+   * which want a hard model commitment.
+   */
+  autoEscalate?: boolean;
 }
 
 export class CacheFirstLoop {
@@ -286,6 +301,13 @@ export class CacheFirstLoop {
   branchOptions: BranchOptions;
   /** See ReconfigurableOptions — mutable so `/effort` can flip mid-session. */
   reasoningEffort: "high" | "max";
+  /**
+   * Auto-escalation toggle. `true` lets the loop self-promote to pro
+   * mid-turn (NEEDS_PRO marker / failure threshold); `false` keeps it
+   * pinned to `model`. Mutable so the dashboard's preset switcher can
+   * flip it live alongside `model`.
+   */
+  autoEscalate = true;
   sessionName: string | null;
 
   /**
@@ -358,6 +380,7 @@ export class CacheFirstLoop {
     // was ~12× more expensive than most deployments needed.
     this.model = opts.model ?? "deepseek-v4-flash";
     this.reasoningEffort = opts.reasoningEffort ?? "max";
+    if (opts.autoEscalate !== undefined) this.autoEscalate = opts.autoEscalate;
     // Iter cap is a safety net, not the primary stop condition. The
     // primary stop is the token-context guard inside step(): after
     // every model response we check whether the prompt is already past
@@ -628,6 +651,7 @@ export class CacheFirstLoop {
     if (opts.model !== undefined) this.model = opts.model;
     if (opts.stream !== undefined) this._streamPreference = opts.stream;
     if (opts.reasoningEffort !== undefined) this.reasoningEffort = opts.reasoningEffort;
+    if (opts.autoEscalate !== undefined) this.autoEscalate = opts.autoEscalate;
 
     if (opts.branch !== undefined) {
       if (typeof opts.branch === "number") {
@@ -767,6 +791,7 @@ export class CacheFirstLoop {
     if (
       bumped &&
       !this._escalateThisTurn &&
+      this.autoEscalate &&
       this._turnFailureCount >= FAILURE_ESCALATION_THRESHOLD
     ) {
       this._escalateThisTurn = true;
@@ -1132,10 +1157,11 @@ export class CacheFirstLoop {
           const callModel = this.modelForCurrentCall();
           // Escalation-marker buffer: delay the first few assistant_delta
           // yields so a "<<<NEEDS_PRO>>>" lead-in never flashes on-screen
-          // before we abort + retry. Only active on flash (pro never
-          // requests its own escalation). Flushed as one delta once we've
-          // seen enough to rule out the marker.
-          const bufferForEscalation = callModel !== ESCALATION_MODEL;
+          // before we abort + retry. Only active on flash AND when the
+          // user hasn't disabled auto-escalation (the `flash` preset
+          // turns this off — model output flows through verbatim, no
+          // marker handling). pro never requests its own escalation.
+          const bufferForEscalation = this.autoEscalate && callModel !== ESCALATION_MODEL;
           let escalationBuf = "";
           let escalationBufFlushed = false;
           for await (const chunk of this.client.stream({
@@ -1291,6 +1317,7 @@ export class CacheFirstLoop {
       // no-op content and passed through verbatim, so there's no
       // infinite-retry loop.
       if (
+        this.autoEscalate &&
         this.modelForCurrentCall() !== ESCALATION_MODEL &&
         this.isEscalationRequest(assistantContent)
       ) {
