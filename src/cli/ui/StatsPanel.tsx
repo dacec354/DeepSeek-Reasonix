@@ -330,27 +330,38 @@ function Header({
 }
 
 /**
- * Dedicated row for the web dashboard URL. Lives between the header
- * and the metrics row so the URL never competes for space with the
- * version + model + mode pills, and so a one-line description is
- * possible — without that context users don't know what they'd open.
- * The URL itself is wrapped in an OSC 8 hyperlink (Cmd/Ctrl-clickable
- * in iTerm2 / WezTerm / Windows Terminal / VS Code / recent
- * gnome-terminal). Terminals that strip the escape just see the bare
- * URL, which is still copy-pasteable.
+ * Dedicated rows for the web dashboard. The URL gets its own line so
+ * Ink's width measurement doesn't have to count the embedded OSC 8
+ * escape against any neighboring text — earlier single-line layouts
+ * had the URL and description fighting for space and the description
+ * wrapped through the middle of the URL on terminals that hide the
+ * hyperlink escape.
+ *
+ *   ◇ web   open the dashboard in a browser (chat · files · stats · settings)
+ *           http://127.0.0.1:NNNN/?token=…
+ *
+ * The URL is wrapped in an OSC 8 hyperlink so iTerm2 / WezTerm /
+ * Windows Terminal / VS Code / recent gnome-terminal make it
+ * Cmd/Ctrl-clickable. Older terminals show the raw URL (still
+ * copy-pasteable). Most terminals also auto-detect bare URLs anyway.
  */
 function DashboardRow({ url, narrow }: { url: string; narrow: boolean }) {
   return (
-    <Box marginTop={narrow ? 0 : 1}>
-      <Text color={COLOR.info}>{"◇ web   "}</Text>
-      <Text color="cyan" bold>
-        {hyperlink(url, url)}
-      </Text>
-      {!narrow ? (
-        <Text dimColor>
-          {"   open the dashboard in a browser (chat · files · stats · settings)"}
+    <Box flexDirection="column" marginTop={narrow ? 0 : 1}>
+      <Box>
+        <Text color={COLOR.info}>{"◇ web   "}</Text>
+        <Text dimColor>{"open the dashboard in a browser (chat · files · stats · settings)"}</Text>
+      </Box>
+      <Box>
+        {/* Match the "◇ web   " prefix width (8 cells) so the URL hangs
+            visually under the description. Indent is a string of spaces
+            because Ink's `paddingLeft` interacts oddly with parent
+            Box widths in some terminals. */}
+        <Text>{"        "}</Text>
+        <Text color="cyan" bold>
+          {hyperlink(url, url)}
         </Text>
-      ) : null}
+      </Box>
     </Box>
   );
 }

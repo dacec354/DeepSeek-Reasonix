@@ -3,6 +3,22 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.8] — 2026-04-28
+
+**Fix:** the dashboard row in 0.12.7 collapsed the URL and
+description onto one Box; on terminals that hide the OSC 8
+escape, Ink's text-width measurement counted the escape bytes
+as visible characters and the description wrapped through the
+middle of the URL. Split into two stacked rows:
+
+```
+◇ web   open the dashboard in a browser (chat · files · stats · settings)
+        http://127.0.0.1:NNNN/?token=…
+```
+
+URL still wrapped in the OSC 8 hyperlink — but it's the only
+content on its row, so a width miscount can't clobber anything.
+
 ## [0.12.7] — 2026-04-28
 
 **Headline:** Dashboard discoverability. Most users had no idea
