@@ -439,6 +439,42 @@ function extOf(p: string): string {
   return m ? m[0] : "";
 }
 
+/**
+ * mtime-keyed line-count cache. The expensive part of validating a
+ * citation with a line number is reading the entire file just to
+ * count newlines — for a 5k-line source file, that's a real
+ * synchronous read on every assistant_final commit that cites it.
+ * Across a session, the model often cites the same file repeatedly
+ * (the file it's currently editing), so the same read happens N
+ * times for the same file content.
+ *
+ * We cache `lineCount` keyed by absolute path, and invalidate by
+ * comparing `mtimeMs` against the latest `statSync` (which we're
+ * already calling for the file-exists check, so the cache hit is
+ * free). Cap entries to 256 to avoid unbounded growth across long
+ * sessions; LRU-evict on overflow with a simple FIFO since hot
+ * citations get re-inserted on use anyway.
+ */
+const lineCountCache = new Map<string, { mtimeMs: number; lineCount: number }>();
+const LINE_COUNT_CACHE_LIMIT = 256;
+
+function getCachedLineCount(fullPath: string, mtimeMs: number): number | null {
+  const hit = lineCountCache.get(fullPath);
+  if (!hit || hit.mtimeMs !== mtimeMs) return null;
+  // Refresh insertion order so this entry is "hot" for FIFO eviction.
+  lineCountCache.delete(fullPath);
+  lineCountCache.set(fullPath, hit);
+  return hit.lineCount;
+}
+
+function setCachedLineCount(fullPath: string, mtimeMs: number, lineCount: number): void {
+  if (lineCountCache.size >= LINE_COUNT_CACHE_LIMIT) {
+    const oldest = lineCountCache.keys().next().value;
+    if (oldest !== undefined) lineCountCache.delete(oldest);
+  }
+  lineCountCache.set(fullPath, { mtimeMs, lineCount });
+}
+
 export function validateCitation(url: string, projectRoot: string): CitationStatus {
   const parts = parseCitationUrl(url);
   if (!parts || !parts.path) return { ok: false, reason: "empty path" };
@@ -476,11 +512,14 @@ export function validateCitation(url: string, projectRoot: string): CitationStat
   if (!stat) return { ok: false, reason: "file not found" };
   if (!stat.isFile()) return { ok: false, reason: "not a file" };
   if (parts.startLine === undefined) return { ok: true };
-  let lineCount: number;
-  try {
-    lineCount = readFileSync(fullPath, "utf8").split("\n").length;
-  } catch {
-    return { ok: false, reason: "unreadable" };
+  let lineCount = getCachedLineCount(fullPath, stat.mtimeMs);
+  if (lineCount === null) {
+    try {
+      lineCount = readFileSync(fullPath, "utf8").split("\n").length;
+    } catch {
+      return { ok: false, reason: "unreadable" };
+    }
+    setCachedLineCount(fullPath, stat.mtimeMs, lineCount);
   }
   if (parts.startLine < 1 || parts.startLine > lineCount) {
     return { ok: false, reason: `line ${parts.startLine} > ${lineCount}` };

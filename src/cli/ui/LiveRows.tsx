@@ -4,7 +4,7 @@ import React from "react";
 import type { ApplyResult } from "../../code/edit-blocks.js";
 import type { EditMode } from "../../config.js";
 import type { JobRegistry } from "../../tools/jobs.js";
-import { useElapsedSeconds, useTick } from "./ticker.js";
+import { useElapsedSeconds, useSlowTick, useTick } from "./ticker.js";
 
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -58,10 +58,12 @@ export function ModeStatusBar({
   undoArmed: boolean;
   jobs?: JobRegistry;
 }) {
-  // Subscribe to tick so the jobs count stays live — the registry is
-  // mutated outside React, so we need a periodic repaint to catch it.
+  // Subscribe to the slow tick so the jobs count stays live — the
+  // registry is mutated outside React, so we need a periodic repaint
+  // to catch it. 1Hz is enough for a count badge: a 1s lag for a job
+  // appearing/disappearing is imperceptible vs how long jobs run.
   // No-op when there's no registry (chat mode / tests).
-  useTick();
+  useSlowTick();
   const running = jobs?.runningCount() ?? 0;
   const jobsTag =
     running > 0 ? (
@@ -148,16 +150,17 @@ function ModePill({
 /**
  * "Just auto-applied N edits — press u to undo" banner. Rendered below
  * the live rows after an auto-mode edit batch lands, visible for 5s.
- * `useTick` drives a crude live countdown so the user sees the window
- * shrinking. State cleanup (the banner disappearing) happens in the
- * parent's setTimeout — the component is purely display.
+ * The countdown ticks once per second — slow tick is the right
+ * cadence here (faster re-renders just redraw the same digit).
+ * State cleanup (the banner disappearing) happens in the parent's
+ * setTimeout — the component is purely display.
  */
 export function UndoBanner({
   banner,
 }: {
   banner: { results: ApplyResult[]; expiresAt: number };
 }) {
-  useTick();
+  useSlowTick();
   const remainingMs = Math.max(0, banner.expiresAt - Date.now());
   const remainingSec = Math.ceil(remainingMs / 1000);
   const ok = banner.results.filter((r) => r.status === "applied" || r.status === "created").length;

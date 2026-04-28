@@ -676,17 +676,16 @@ function Elapsed() {
 }
 
 /**
- * Animated role glyph for the actively-streaming assistant. Alternates
- * ◆ ↔ ◇ every ~480ms so the user can see the model is alive even
- * during R1's long pre-first-byte silence. Settles back to a static
- * ◆ once the turn ends (StreamingAssistant is unmounted).
+ * Role glyph for the actively-streaming assistant. The braille
+ * spinner sitting next to it (`Pulse`) already conveys "alive" — a
+ * second animated indicator on the same row was visually noisy AND
+ * doubled the fast-tick subscriber count for the streaming row. The
+ * glyph stays static; the spinner does the liveness signaling.
  */
 function PulsingAssistantGlyph() {
-  const tick = useTick();
-  const on = Math.floor(tick / 4) % 2 === 0;
   return (
     <Text color="green" bold>
-      {on ? ROLE_GLYPH.assistant : ROLE_GLYPH.assistantPulse}
+      {ROLE_GLYPH.assistant}
     </Text>
   );
 }
@@ -758,7 +757,12 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
   const reasoningOnly = !event.text && !!event.reasoning && !toolCallBuild;
   const toolCallOnly = !event.text && !event.reasoning && !!toolCallBuild;
   // Phase pill — solid bg color per phase so the user reads
-  // "what's happening" at a glance from across the screen.
+  // "what's happening" at a glance from across the screen. Pill text
+  // is padded to a fixed width so a phase transition (WAITING →
+  // THINKING → WRITING) doesn't shift everything to its right by 1
+  // column. Yoga reflows on width change; locking the pill stops the
+  // streaming row from twitching every time the model crosses a phase.
+  const PILL_WIDTH = 8;
   let pillBg: string;
   let pillText: string;
   let label: string;
@@ -786,6 +790,7 @@ function StreamingAssistant({ event }: { event: DisplayEvent }) {
     }
     label = parts.join(" · ");
   }
+  pillText = pillText.padEnd(PILL_WIDTH);
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
@@ -877,7 +882,13 @@ function formatReadyTail(tb: { readyCount?: number } | undefined): string {
 }
 
 function lastLine(s: string, maxChars: number): string {
-  const flat = s.replace(/\s+/g, " ").trim();
+  // The streaming row only ever shows the last ~maxChars characters,
+  // so collapsing whitespace across the entire (possibly multi-KB)
+  // buffer on every 30Hz flush is wasted work. Slice a generous tail
+  // first — `maxChars * 4` covers the worst case where the tail is
+  // mostly whitespace that collapses away — then flatten just that.
+  const tailSlice = s.length > maxChars * 4 ? s.slice(-maxChars * 4) : s;
+  const flat = tailSlice.replace(/\s+/g, " ").trim();
   if (!flat) return "";
   return flat.length <= maxChars ? flat : `…${flat.slice(-maxChars)}`;
 }
