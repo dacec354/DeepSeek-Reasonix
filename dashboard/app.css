@@ -1593,9 +1593,10 @@ textarea:focus {
 
 .editor-shell {
   display: flex;
+  flex-direction: column;
   height: calc(100vh - 56px);
-  gap: 12px;
-  padding: 12px;
+  padding: 0;
+  background: var(--bg-0);
 }
 
 /* When the editor renders inside the right-side drawer, it follows
@@ -1611,11 +1612,20 @@ textarea:focus {
   height: auto;
   min-height: 0;
 }
+.editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
 .editor-side {
-  width: 280px;
+  width: 260px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  padding: 8px 8px 8px 10px;
   transition: width 0.15s ease-out;
 }
 .editor-side.collapsed {
@@ -1658,8 +1668,8 @@ textarea:focus {
   flex: 1;
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-1);
+  border-radius: var(--radius-sm);
+  background: var(--bg-0);
 }
 .editor-file {
   padding: 5px 10px;
@@ -1727,17 +1737,28 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  background: #282c34;
 }
 .editor-tabs {
   display: flex;
-  gap: 2px;
+  align-items: stretch;
+  gap: 0;
+  background: var(--bg-1);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   flex-wrap: nowrap;
   flex-shrink: 0;
+  height: 34px;
+  scrollbar-width: thin;
+}
+.editor-tabs::-webkit-scrollbar {
+  height: 3px;
+}
+.editor-tabs::-webkit-scrollbar-thumb {
+  background: var(--border);
 }
 .editor-no-tabs {
-  padding: 10px 14px;
+  padding: 9px 14px;
   color: var(--fg-3);
   font-size: 12px;
   font-family: var(--mono);
@@ -1746,26 +1767,31 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 0 10px 0 12px;
   background: var(--bg-1);
-  border: 1px solid var(--border);
-  border-bottom: none;
-  border-top-left-radius: var(--radius-sm);
-  border-top-right-radius: var(--radius-sm);
+  border: none;
+  border-right: 1px solid var(--border);
+  border-top: 2px solid transparent;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: -1px;
   font-family: var(--mono);
   font-size: 12px;
-  color: var(--fg-2);
+  color: var(--fg-3);
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
+  height: 34px;
+  position: relative;
 }
 .editor-tab:hover {
-  color: var(--fg-0);
+  color: var(--fg-1);
+  background: var(--bg-2);
 }
 .editor-tab.active {
-  background: var(--bg-2);
-  color: var(--primary);
-  border-bottom-color: var(--bg-2);
+  background: #282c34;
+  color: var(--fg-0);
+  border-top-color: var(--primary);
+  border-bottom-color: #282c34;
 }
 .editor-tab-name {
   max-width: 200px;
@@ -1776,14 +1802,21 @@ textarea:focus {
   color: var(--accent);
   font-size: 14px;
   line-height: 1;
+  width: 12px;
+  text-align: center;
 }
 .editor-tab-close {
-  margin-left: 4px;
+  margin-left: 2px;
   color: var(--fg-3);
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1;
-  padding: 0 4px;
+  padding: 1px 5px;
   border-radius: var(--radius-sm);
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .editor-tab-close:hover {
   background: var(--bg-3);
@@ -1793,27 +1826,97 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 12px;
+  padding: 6px 12px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .editor-host {
   flex: 1;
   overflow: hidden;
-  background: var(--bg-1);
-  border: 1px solid var(--border);
-  border-top: none;
-  border-bottom-left-radius: var(--radius-md);
-  border-bottom-right-radius: var(--radius-md);
+  background: #282c34;
+  border: none;
+  border-radius: 0;
+  min-height: 0;
 }
 .editor-host .cm-editor {
   height: 100%;
   font-family: var(--mono);
   font-size: 13px;
+  outline: none;
+}
+.editor-host .cm-editor.cm-focused {
+  outline: none;
 }
 .editor-host .cm-scroller {
   font-family: inherit;
+  line-height: 1.55;
 }
+
+/* VS Code-style gutter — darker bg, dim line numbers, accent on active */
+.editor-host .cm-gutters {
+  background: #21252b;
+  border-right: 1px solid #181a1f;
+  color: #495162;
+}
+.editor-host .cm-lineNumbers {
+  font-family: var(--mono);
+  font-size: 12px;
+  min-width: 40px;
+}
+.editor-host .cm-lineNumbers .cm-gutterElement {
+  padding: 0 12px 0 16px;
+  color: #495162;
+}
+.editor-host .cm-activeLineGutter {
+  background: #2c313a;
+  color: #abb2bf;
+}
+.editor-host .cm-foldGutter {
+  color: #5c6370;
+}
+.editor-host .cm-foldGutter .cm-gutterElement {
+  padding: 0 4px;
+  cursor: pointer;
+}
+.editor-host .cm-activeLine {
+  background: rgba(99, 110, 123, 0.1);
+}
+.editor-host .cm-selectionBackground,
+.editor-host .cm-content ::selection {
+  background: #3e4451 !important;
+}
+.editor-host .cm-cursor {
+  border-left-color: #61afef;
+  border-left-width: 2px;
+}
+
+/* Autocomplete popup — match the dark theme */
+.cm-tooltip.cm-tooltip-autocomplete {
+  background: #21252b;
+  border: 1px solid #181a1f;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li {
+  padding: 3px 10px;
+  color: #abb2bf;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--primary);
+  color: #1e2127;
+}
+.cm-completionLabel {
+  font-family: var(--mono);
+}
+.cm-completionDetail {
+  color: #5c6370;
+  font-style: normal;
+  margin-left: 8px;
+}
+
 .editor-empty {
   flex: 1;
   display: flex;
@@ -1822,16 +1925,25 @@ textarea:focus {
   color: var(--fg-3);
   font-family: var(--mono);
   font-size: 13px;
+  background: #282c34;
 }
 
 @media (max-width: 800px) {
   .editor-shell {
-    flex-direction: column;
     height: calc(100vh - 100px);
+  }
+  .editor-body {
+    flex-direction: column;
   }
   .editor-side {
     width: 100%;
     max-height: 200px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .editor-side.collapsed {
+    width: 100%;
+    max-height: 32px;
   }
 }
 

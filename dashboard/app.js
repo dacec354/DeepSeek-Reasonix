@@ -2768,10 +2768,24 @@ async function loadCodeMirror() {
       "?deps=@codemirror/state@6.4.1,@codemirror/view@6.26.0,@codemirror/language@6.10.1,@codemirror/commands@6.5.0";
     const [
       { EditorState, Compartment },
-      { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection },
+      {
+        EditorView,
+        keymap,
+        lineNumbers,
+        highlightActiveLine,
+        highlightActiveLineGutter,
+        drawSelection,
+      },
       { defaultKeymap, history, historyKeymap, indentWithTab },
-      { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput },
-      { closeBrackets, closeBracketsKeymap, autocompletion } = {},
+      {
+        syntaxHighlighting,
+        defaultHighlightStyle,
+        bracketMatching,
+        indentOnInput,
+        foldGutter,
+        foldKeymap,
+      },
+      { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } = {},
       { searchKeymap, highlightSelectionMatches } = {},
       { oneDark },
       jsLang,
@@ -2816,6 +2830,7 @@ async function loadCodeMirror() {
       keymap,
       lineNumbers,
       highlightActiveLine,
+      highlightActiveLineGutter,
       drawSelection,
       defaultKeymap,
       history,
@@ -2825,9 +2840,12 @@ async function loadCodeMirror() {
       defaultHighlightStyle,
       bracketMatching,
       indentOnInput,
+      foldGutter,
+      foldKeymap,
       closeBrackets,
       closeBracketsKeymap,
       autocompletion,
+      completionKeymap,
       searchKeymap,
       highlightSelectionMatches,
       oneDark,
@@ -3030,23 +3048,36 @@ function EditorPanel({ onClose } = {}) {
 
     const extensions = [
       cm.lineNumbers(),
+      cm.highlightActiveLineGutter ? cm.highlightActiveLineGutter() : [],
+      cm.foldGutter ? cm.foldGutter() : [],
       cm.highlightActiveLine(),
       cm.drawSelection(),
       cm.history(),
       cm.bracketMatching(),
       cm.indentOnInput(),
       cm.closeBrackets ? cm.closeBrackets() : [],
-      cm.autocompletion ? cm.autocompletion() : [],
+      cm.autocompletion
+        ? cm.autocompletion({
+            activateOnTyping: true,
+            closeOnBlur: true,
+            maxRenderedOptions: 30,
+          })
+        : [],
       cm.highlightSelectionMatches ? cm.highlightSelectionMatches() : [],
-      cm.syntaxHighlighting(cm.defaultHighlightStyle, { fallback: true }),
       cm.keymap.of([
         ...cm.defaultKeymap,
         ...cm.historyKeymap,
         ...(cm.closeBracketsKeymap ?? []),
         ...(cm.searchKeymap ?? []),
+        ...(cm.completionKeymap ?? []),
+        ...(cm.foldKeymap ?? []),
         cm.indentWithTab,
       ]),
+      // oneDark is an array of [theme, syntaxHighlighting(oneDarkHighlightStyle)] —
+      // including it gives both the dark UI and the highlight tags. Keep
+      // defaultHighlightStyle as a fallback only for languages oneDark omits.
       cm.oneDark,
+      cm.syntaxHighlighting(cm.defaultHighlightStyle, { fallback: true }),
       cm.EditorView.lineWrapping,
       updateListener,
     ];
@@ -3144,6 +3175,29 @@ function EditorPanel({ onClose } = {}) {
         `
           : null
       }
+      <div class="editor-tabs">
+        ${
+          tabs.length === 0
+            ? html`<div class="editor-no-tabs">No files open. Pick from the list, paste a path above, or click a path in chat.</div>`
+            : tabs.map(
+                (t, i) => html`
+            <div
+              key=${t.path}
+              class="editor-tab ${i === activeIdx ? "active" : ""}"
+              onClick=${() => setActiveIdx(i)}
+            >
+              <span class="editor-tab-name" title=${t.path}>${t.path.split("/").pop()}</span>
+              ${t.dirty ? html`<span class="editor-tab-dirty">●</span>` : null}
+              <span class="editor-tab-close" onClick=${(e) => {
+                e.stopPropagation();
+                closeTab(i);
+              }}>×</span>
+            </div>
+          `,
+              )
+        }
+      </div>
+      <div class="editor-body">
       ${
         sideCollapsed
           ? html`
@@ -3239,29 +3293,6 @@ function EditorPanel({ onClose } = {}) {
       }
 
       <div class="editor-main">
-        <div class="editor-tabs">
-          ${
-            tabs.length === 0
-              ? html`<div class="editor-no-tabs">No files open. Pick from the list, paste a path above, or click a path in chat.</div>`
-              : tabs.map(
-                  (t, i) => html`
-              <div
-                key=${t.path}
-                class="editor-tab ${i === activeIdx ? "active" : ""}"
-                onClick=${() => setActiveIdx(i)}
-              >
-                <span class="editor-tab-name" title=${t.path}>${t.path.split("/").pop()}</span>
-                ${t.dirty ? html`<span class="editor-tab-dirty">●</span>` : null}
-                <span class="editor-tab-close" onClick=${(e) => {
-                  e.stopPropagation();
-                  closeTab(i);
-                }}>×</span>
-              </div>
-            `,
-                )
-          }
-        </div>
-
         ${
           tab
             ? html`
@@ -3288,6 +3319,7 @@ function EditorPanel({ onClose } = {}) {
             </div>
           `
         }
+      </div>
       </div>
     </div>
   `;

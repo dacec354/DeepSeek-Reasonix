@@ -3,6 +3,41 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.2] — 2026-04-28
+
+**Headline:** Editor polish pass. Tabs at the top span the full
+editor width like VS Code, syntax highlighting actually shows up,
+the gutter/line numbers match the dark theme, autocomplete pops
+on every keystroke instead of waiting for a manual trigger.
+
+### Editor
+
+- **Tabs on top, full width** — moved out of `.editor-main` and
+  into a sibling `.editor-tabs` that sits above the side+main
+  body row. Active tab gets a primary-color top border and the
+  editor's own background, so it visually merges into the code
+  surface (VS Code pattern). The file panel can collapse and the
+  tab bar stays put.
+- **Highlighting works** — `oneDark` already ships its own
+  HighlightStyle; the existing `defaultHighlightStyle` wrap was
+  fine but ordered before `oneDark`, so it didn't cover languages
+  oneDark misses. Reordered to fall back AFTER oneDark and added
+  `highlightActiveLineGutter` so the active row stands out in the
+  gutter too.
+- **Gutter restyled** — `.cm-gutters` gets a darker `#21252b`
+  background, line numbers use the muted `#495162` for inactive
+  rows and `#abb2bf` for the active row, with a 40px min-width
+  and 16px right-padding. Fold gutter ships alongside (click the
+  arrow next to a brace to fold).
+- **Autocomplete** — `autocompletion({ activateOnTyping: true,
+  closeOnBlur: true, maxRenderedOptions: 30 })` so suggestions
+  pop while you type. Added `completionKeymap` so Tab/Enter pick
+  the highlighted entry. Popup styled to the dark palette.
+- **Tab close ergonomics** — close button has a fixed 18px box
+  so the tab doesn't jump width when the dirty dot toggles.
+
+All edits in `dashboard/app.js` `EditorPanel` + `dashboard/app.css`.
+
 ## [0.12.1] — 2026-04-28
 
 **Headline:** Editor v2 — VS Code-style file tree, collapsible file
