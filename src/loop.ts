@@ -420,7 +420,34 @@ export class CacheFirstLoop {
     this.stream = this.branchEnabled ? false : this._streamPreference;
 
     const allowedNames = new Set([...this.prefix.toolSpecs.map((s) => s.function.name)]);
-    this.repair = new ToolCallRepair({ allowedToolNames: allowedNames });
+    // Mutation predicate sourced from the ToolRegistry: a tool is
+    // mutating unless it declares `readOnly: true` (or has a per-call
+    // `readOnlyCheck` that returns true on the actual args). The storm
+    // breaker uses this to clear its window after edit/write/shell, so
+    // legitimate read → edit → verify cycles aren't mistaken for storms.
+    const registry = this.tools;
+    const isMutating = (call: ToolCall): boolean => {
+      const name = call.function?.name;
+      if (!name) return false;
+      const def = registry.get(name);
+      if (!def) return false;
+      if (def.readOnlyCheck) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function?.arguments ?? "{}") ?? {};
+        } catch {
+          // Malformed args → fall through to the static flag below; the
+          // dynamic check would've thrown anyway.
+        }
+        try {
+          if (def.readOnlyCheck(args as never)) return false;
+        } catch {
+          /* ignore — fall through */
+        }
+      }
+      return def.readOnly !== true;
+    };
+    this.repair = new ToolCallRepair({ allowedToolNames: allowedNames, isMutating });
 
     // Session resume: pre-load prior messages into the log if a session name
     // is provided. New messages appended to the log are also persisted.

@@ -12,7 +12,7 @@
 
 import type { ToolCall } from "../types.js";
 import { scavengeToolCalls } from "./scavenge.js";
-import { StormBreaker } from "./storm.js";
+import { type IsMutating, StormBreaker } from "./storm.js";
 import { repairTruncatedJson } from "./truncation.js";
 
 export { analyzeSchema, flattenSchema, nestArguments } from "./flatten.js";
@@ -35,6 +35,14 @@ export interface ToolCallRepairOptions {
   stormWindow?: number;
   stormThreshold?: number;
   maxScavenge?: number;
+  /**
+   * Optional predicate the storm breaker consults to identify state-
+   * changing calls — those clear the sliding window so a post-edit
+   * verify-read isn't mistaken for a repeat. Production callers wire
+   * this off the ToolRegistry's `readOnly` / `readOnlyCheck` flags;
+   * tests that don't supply it keep the original behavior.
+   */
+  isMutating?: IsMutating;
 }
 
 export class ToolCallRepair {
@@ -43,7 +51,7 @@ export class ToolCallRepair {
 
   constructor(opts: ToolCallRepairOptions) {
     this.opts = opts;
-    this.storm = new StormBreaker(opts.stormWindow ?? 6, opts.stormThreshold ?? 3);
+    this.storm = new StormBreaker(opts.stormWindow ?? 6, opts.stormThreshold ?? 3, opts.isMutating);
   }
 
   /**

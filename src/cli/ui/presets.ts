@@ -99,15 +99,22 @@ export const PRESET_DESCRIPTIONS: Record<
 };
 
 /**
- * Resolve a preset name (canonical or unknown) to its settings.
- * Anything that isn't `auto | flash | pro` — including the dropped
- * legacy `fast / smart / max` aliases — collapses to `auto`. Simpler
- * than mapping legacy values (each legacy name had its own semantics
- * that don't 1:1 onto the new model-commitment vocabulary); auto is
- * the safe default and the user can re-pick explicitly.
+ * Resolve a preset name (canonical or legacy) to its settings.
+ * Canonical names (`auto | flash | pro`) hit the PRESETS table.
+ * Legacy names from the v0.5–v0.11 vocabulary still resolve to their
+ * old behavior so a `~/.reasonix/config.json` written by an older
+ * Reasonix doesn't suddenly start producing different model + effort
+ * choices on upgrade:
+ *   - `fast`  → flash with effort=high (cheaper, predictable)
+ *   - `smart` → auto    (flash + max + auto-escalate; the old default)
+ *   - `max`   → pro     (pro + max)
+ * Anything else collapses to `auto`.
  */
 export function resolvePreset(name: PresetName | undefined): PresetSettings {
   if (name === "auto" || name === "flash" || name === "pro") return PRESETS[name];
+  if (name === "fast") return { ...PRESETS.flash, reasoningEffort: "high" };
+  if (name === "smart") return PRESETS.auto;
+  if (name === "max") return PRESETS.pro;
   return PRESETS.auto;
 }
 

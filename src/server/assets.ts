@@ -51,6 +51,7 @@ const ASSET_DIR = resolveAssetDir();
 let cachedIndex: string | null = null;
 let cachedApp: string | null = null;
 let cachedCss: string | null = null;
+let cachedCm: string | null = null;
 
 function loadIndexTemplate(): string {
   if (cachedIndex) return cachedIndex;
@@ -68,6 +69,12 @@ function loadCss(): string {
   if (cachedCss) return cachedCss;
   cachedCss = readFileSync(join(ASSET_DIR, "app.css"), "utf8");
   return cachedCss;
+}
+
+function loadCm(): string {
+  if (cachedCm) return cachedCm;
+  cachedCm = readFileSync(join(ASSET_DIR, "codemirror.js"), "utf8");
+  return cachedCm;
 }
 
 /**
@@ -94,6 +101,9 @@ export function serveAsset(name: string): { body: string; contentType: string } 
   }
   if (name === "app.css") {
     return { body: loadCss(), contentType: "text/css; charset=utf-8" };
+  }
+  if (name === "codemirror.js") {
+    return { body: loadCm(), contentType: "application/javascript; charset=utf-8" };
   }
   return null;
 }

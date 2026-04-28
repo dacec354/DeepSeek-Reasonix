@@ -189,6 +189,63 @@ body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  transition: width 0.18s ease-out;
+}
+.sidebar.collapsed {
+  width: 52px;
+}
+.sidebar.collapsed .sidebar-label {
+  display: none;
+}
+.sidebar.collapsed .sidebar-header {
+  padding: 14px 8px 10px;
+  text-align: center;
+}
+.sidebar.collapsed .sidebar-brand {
+  font-size: 0;
+}
+.sidebar.collapsed .sidebar-brand .glyph {
+  font-size: 18px;
+  margin: 0;
+}
+.sidebar.collapsed .tab {
+  padding: 9px 0;
+  justify-content: center;
+  border-left: 2px solid transparent;
+}
+.sidebar.collapsed .tab.active {
+  border-left-color: var(--primary);
+}
+.sidebar.collapsed .tab .glyph {
+  width: auto;
+  font-size: 14px;
+}
+.sidebar.collapsed .sidebar-collapse-toggle {
+  padding: 8px 0;
+  justify-content: center;
+}
+.sidebar.collapsed .sidebar-footer {
+  display: none;
+}
+
+.sidebar-collapse-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--border);
+  padding: 8px 20px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.sidebar-collapse-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--primary);
 }
 
 .sidebar-header {
@@ -1388,6 +1445,117 @@ textarea:focus {
   max-height: 200px;
 }
 
+/* Side-by-side diff for the edit-review modal — left is "before" (red
+ * tint), right is "after" (green tint), context rows render unchanged.
+ * Lines hljs-highlight per the file's language. */
+.edit-diff-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+}
+.edit-diff-head {
+  display: flex;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.edit-diff-side {
+  flex: 1;
+  padding: 6px 12px;
+}
+.edit-diff-side + .edit-diff-side {
+  border-left: 1px solid var(--border);
+}
+.edit-diff-side-old .edit-diff-marker {
+  color: #f87171;
+  font-weight: 700;
+  margin-right: 4px;
+}
+.edit-diff-side-new .edit-diff-marker {
+  color: #86efac;
+  font-weight: 700;
+  margin-right: 4px;
+}
+.edit-diff-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+.edit-diff-row {
+  display: flex;
+  width: 100%;
+  align-items: stretch;
+  min-height: 19px;
+}
+.edit-diff-cell {
+  flex: 1;
+  padding: 1px 12px;
+  white-space: pre;
+  overflow-x: auto;
+  border-right: 1px solid var(--border);
+  color: var(--fg-1);
+  line-height: 1.55;
+}
+.edit-diff-cell:last-child {
+  border-right: none;
+}
+.edit-diff-row-context .edit-diff-cell {
+  background: transparent;
+  color: var(--fg-2);
+}
+.edit-diff-row-del .edit-diff-cell-old,
+.edit-diff-row-change .edit-diff-cell-old {
+  background: rgba(248, 113, 113, 0.12);
+  border-left: 2px solid #f87171;
+  padding-left: 10px;
+}
+.edit-diff-row-ins .edit-diff-cell-new,
+.edit-diff-row-change .edit-diff-cell-new {
+  background: rgba(134, 239, 172, 0.12);
+  border-left: 2px solid #86efac;
+  padding-left: 10px;
+}
+.edit-diff-cell-old .edit-diff-empty,
+.edit-diff-cell-new .edit-diff-empty {
+  display: inline-block;
+  width: 1px;
+}
+.edit-diff-row-del .edit-diff-cell-new,
+.edit-diff-row-ins .edit-diff-cell-old {
+  background: var(--bg-3);
+  opacity: 0.5;
+}
+.edit-diff-line {
+  font-family: var(--mono);
+}
+
+@media (max-width: 800px) {
+  .edit-diff-row {
+    flex-direction: column;
+  }
+  .edit-diff-cell {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .edit-diff-head {
+    flex-direction: column;
+  }
+  .edit-diff-side + .edit-diff-side {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
 .muted {
   color: var(--fg-3);
 }
@@ -1938,6 +2106,51 @@ textarea:focus {
   font-family: var(--mono);
   font-size: 13px;
   background: #282c34;
+}
+
+/* Split view — left half source (CodeMirror), right half preview. */
+.editor-split {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+.editor-split-pane {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+}
+.editor-split .editor-split-pane + .editor-split-pane {
+  border-left: 1px solid #181a1f;
+}
+
+/* Segmented control for Edit / Split / Preview */
+.view-mode-group {
+  display: inline-flex;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  padding: 0;
+}
+.view-mode-group .view-mode {
+  background: transparent;
+  border: none;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-3);
+  cursor: pointer;
+  border-radius: 0;
+}
+.view-mode-group .view-mode:hover {
+  color: var(--fg-1);
+  background: var(--bg-hover);
+}
+.view-mode-group .view-mode.active {
+  background: var(--primary);
+  color: #1e2127;
 }
 
 /* Markdown preview — render the same .md styles used in chat,

@@ -922,9 +922,9 @@ export function App({
 
   useEffect(() => {
     if (!pendingEditReview) return;
-    // Trim the preview — full file diffs can be huge; web doesn't need
-    // a 200-line block in a modal. The TUI shows a fuller view because
-    // EditConfirm has its own scrollable region.
+    // Trim the preview — older clients only render this string; newer
+    // clients use `search`/`replace` directly to render a side-by-side
+    // diff with syntax highlighting (full content, no line cap).
     const previewLines = (pendingEditReview.search || pendingEditReview.replace || "")
       .split("\n")
       .slice(0, 12);
@@ -934,6 +934,8 @@ export function App({
       modal: {
         kind: "edit-review",
         path: pendingEditReview.path,
+        search: pendingEditReview.search ?? "",
+        replace: pendingEditReview.replace ?? "",
         preview,
         total: pendingEdits.current.length,
         remaining: pendingEdits.current.length,
@@ -1796,6 +1798,8 @@ export function App({
           return {
             kind: "edit-review",
             path: er.path,
+            search: er.search ?? "",
+            replace: er.replace ?? "",
             preview: (er.search || er.replace || "").split("\n").slice(0, 12).join("\n"),
             total: pendingEdits.current.length,
             remaining: pendingEdits.current.length,

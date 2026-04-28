@@ -989,7 +989,98 @@ function PlanModal({ modal, onResolve }) {
   `;
 }
 
+// Line-level LCS diff. Returns an ordered list of rows; "context" rows
+// appear on both sides, "del" only on the left (red), "ins" only on the
+// right (green). Adjacent del/ins are paired into one row downstream so
+// the change reads "old → new" left-to-right like a git side-by-side.
+function lineDiff(aLines, bLines) {
+  const m = aLines.length;
+  const n = bLines.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (aLines[i - 1] === bLines[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+      else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  const out = [];
+  let i = m;
+  let j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && aLines[i - 1] === bLines[j - 1]) {
+      out.push({ kind: "context", text: aLines[i - 1] });
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      out.push({ kind: "ins", text: bLines[j - 1] });
+      j--;
+    } else {
+      out.push({ kind: "del", text: aLines[i - 1] });
+      i--;
+    }
+  }
+  return out.reverse();
+}
+
+// Pair del/ins runs into side-by-side rows. A run of consecutive dels
+// followed by a run of inss collapses into rows of (del[k], ins[k]) so
+// the modified line lines up across the gutter; surplus on either side
+// produces rows with the opposite cell empty.
+function pairDiffRows(diff) {
+  const rows = [];
+  let k = 0;
+  while (k < diff.length) {
+    if (diff[k].kind === "context") {
+      rows.push({ left: diff[k].text, right: diff[k].text, kind: "context" });
+      k++;
+      continue;
+    }
+    const dels = [];
+    const inss = [];
+    while (k < diff.length && diff[k].kind === "del") {
+      dels.push(diff[k].text);
+      k++;
+    }
+    while (k < diff.length && diff[k].kind === "ins") {
+      inss.push(diff[k].text);
+      k++;
+    }
+    const pairs = Math.max(dels.length, inss.length);
+    for (let p = 0; p < pairs; p++) {
+      rows.push({
+        left: dels[p] ?? null,
+        right: inss[p] ?? null,
+        kind: dels[p] != null && inss[p] != null ? "change" : dels[p] != null ? "del" : "ins",
+      });
+    }
+  }
+  return rows;
+}
+
+// Highlight a single line via hljs in the file's language; falls back to
+// auto-detect, then escaped plain text. Always returns inline HTML safe
+// to drop into a span.
+function hlLine(text, lang) {
+  if (text == null) return "";
+  if (text === "") return "";
+  try {
+    if (lang && hljs.getLanguage(lang)) {
+      return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
+    }
+    return hljs.highlightAuto(text).value;
+  } catch {
+    return escapeHtml(text);
+  }
+}
+
 function EditReviewModal({ modal, onResolve }) {
+  const search = modal.search ?? "";
+  const replace = modal.replace ?? "";
+  const lang = langFromPath(modal.path);
+  const aLines = search.split("\n");
+  const bLines = replace.split("\n");
+  const rows = pairDiffRows(lineDiff(aLines, bLines));
+
   return html`
     <${ModalCard}
       accent="#86efac"
@@ -997,7 +1088,44 @@ function EditReviewModal({ modal, onResolve }) {
       title="edit pending review"
       subtitle=${`${modal.path} · ${modal.remaining} of ${modal.total} blocks remaining`}
     >
-      <pre class="modal-edit-preview">${modal.preview}</pre>
+      <div class="edit-diff-wrap">
+        <div class="edit-diff-head">
+          <div class="edit-diff-side edit-diff-side-old">
+            <span class="edit-diff-marker">−</span> before
+          </div>
+          <div class="edit-diff-side edit-diff-side-new">
+            <span class="edit-diff-marker">+</span> after
+          </div>
+        </div>
+        <div class="edit-diff-body">
+          ${rows.map(
+            (row, i) => html`
+            <div key=${i} class=${`edit-diff-row edit-diff-row-${row.kind}`}>
+              <div class="edit-diff-cell edit-diff-cell-old">
+                ${
+                  row.left != null
+                    ? html`<span
+                        class="edit-diff-line"
+                        dangerouslySetInnerHTML=${{ __html: hlLine(row.left, lang) || "&nbsp;" }}
+                      ></span>`
+                    : html`<span class="edit-diff-empty">&nbsp;</span>`
+                }
+              </div>
+              <div class="edit-diff-cell edit-diff-cell-new">
+                ${
+                  row.right != null
+                    ? html`<span
+                        class="edit-diff-line"
+                        dangerouslySetInnerHTML=${{ __html: hlLine(row.right, lang) || "&nbsp;" }}
+                      ></span>`
+                    : html`<span class="edit-diff-empty">&nbsp;</span>`
+                }
+              </div>
+            </div>
+          `,
+          )}
+        </div>
+      </div>
       <div class="modal-actions">
         <button class="primary" onClick=${() => onResolve("edit-review", "apply")}>Apply (y)</button>
         <button onClick=${() => onResolve("edit-review", "reject")}>Reject (n)</button>
@@ -2782,126 +2910,17 @@ function McpPanel() {
 // who never open Editor never pay the ~200KB cost. Cached after first
 // resolve so tab switches don't re-fetch.
 //
-// Critical: every CM package needs to share the SAME @codemirror/state
-// instance. Without ?deps= esm.sh resolves each language pack's
-// transitive `@codemirror/state` to a SEPARATELY-versioned URL, which
-// breaks `instanceof Extension` and crashes EditorState.create with
-// "Unrecognized extension value". Pinning core deps here forces every
-// pack to resolve against the same set of instances.
-//
-// @lezer/highlight + @lezer/common MUST be pinned too: highlight tags
-// (`tags.keyword`, etc.) are JS objects compared by identity. If two
-// packages load different @lezer/highlight, oneDark's HighlightStyle
-// stops recognizing tags coming out of the language parser → editor
-// renders, but no token colors. That's the silent "no highlighting"
-// failure mode. Same for @lezer/common (parser nodes).
+// CodeMirror loads from a locally bundled file (`/assets/codemirror.js`,
+// produced by `scripts/bundle-codemirror.mjs`). One bundle = one copy
+// of every package = no Tag identity mismatch between oneDark and the
+// language parsers, no esm.sh round-trips on every cold load. The
+// previous esm.sh + ?deps= setup hit silent failure modes whenever the
+// CDN resolved a transitive @lezer/* to a different version than the
+// bundled cache thought it would.
 let cmModulesPromise = null;
 async function loadCodeMirror() {
   if (cmModulesPromise) return cmModulesPromise;
-  cmModulesPromise = (async () => {
-    const DEPS =
-      "?deps=@codemirror/state@6.4.1,@codemirror/view@6.26.0,@codemirror/language@6.10.1,@codemirror/commands@6.5.0,@lezer/common@1.2.1,@lezer/highlight@1.2.0";
-    const [
-      { EditorState, Compartment },
-      {
-        EditorView,
-        keymap,
-        lineNumbers,
-        highlightActiveLine,
-        highlightActiveLineGutter,
-        drawSelection,
-      },
-      { defaultKeymap, history, historyKeymap, indentWithTab },
-      {
-        syntaxHighlighting,
-        defaultHighlightStyle,
-        bracketMatching,
-        indentOnInput,
-        foldGutter,
-        foldKeymap,
-      },
-      { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } = {},
-      { searchKeymap, highlightSelectionMatches } = {},
-      { oneDark },
-      jsLang,
-      pyLang,
-      mdLang,
-      jsonLang,
-      htmlLang,
-      cssLang,
-      rustLang,
-      goLang,
-      cppLang,
-      yamlLang,
-      sqlLang,
-      xmlLang,
-      phpLang,
-    ] = await Promise.all([
-      import("https://esm.sh/@codemirror/state@6.4.1"),
-      import(`https://esm.sh/@codemirror/view@6.26.0${DEPS}`),
-      import(`https://esm.sh/@codemirror/commands@6.5.0${DEPS}`),
-      import(`https://esm.sh/@codemirror/language@6.10.1${DEPS}`),
-      import(`https://esm.sh/@codemirror/autocomplete@6.16.0${DEPS}`),
-      import(`https://esm.sh/@codemirror/search@6.5.6${DEPS}`),
-      import(`https://esm.sh/@codemirror/theme-one-dark@6.1.2${DEPS}`),
-      import(`https://esm.sh/@codemirror/lang-javascript@6.2.2${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-python@6.1.6${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-markdown@6.2.5${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-json@6.0.1${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-html@6.4.9${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-css@6.2.1${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-rust@6.0.1${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-go@6.0.1${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-cpp@6.0.2${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-yaml@6.1.1${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-sql@6.6.4${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-xml@6.1.0${DEPS}`).catch(() => null),
-      import(`https://esm.sh/@codemirror/lang-php@6.0.1${DEPS}`).catch(() => null),
-    ]);
-    return {
-      EditorState,
-      Compartment,
-      EditorView,
-      keymap,
-      lineNumbers,
-      highlightActiveLine,
-      highlightActiveLineGutter,
-      drawSelection,
-      defaultKeymap,
-      history,
-      historyKeymap,
-      indentWithTab,
-      syntaxHighlighting,
-      defaultHighlightStyle,
-      bracketMatching,
-      indentOnInput,
-      foldGutter,
-      foldKeymap,
-      closeBrackets,
-      closeBracketsKeymap,
-      autocompletion,
-      completionKeymap,
-      searchKeymap,
-      highlightSelectionMatches,
-      oneDark,
-      langs: {
-        javascript: jsLang?.javascript,
-        typescript: () => jsLang?.javascript({ typescript: true }),
-        python: pyLang?.python,
-        markdown: mdLang?.markdown,
-        json: jsonLang?.json,
-        html: htmlLang?.html,
-        css: cssLang?.css,
-        rust: rustLang?.rust,
-        go: goLang?.go,
-        cpp: cppLang?.cpp,
-        yaml: yamlLang?.yaml,
-        sql: sqlLang?.sql,
-        xml: xmlLang?.xml,
-        php: phpLang?.php,
-      },
-    };
-  })();
+  cmModulesPromise = import(`/assets/codemirror.js?token=${TOKEN}`);
   return cmModulesPromise;
 }
 
@@ -2970,7 +2989,10 @@ function EditorPanel({ onClose } = {}) {
   const [cmReady, setCmReady] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [expanded, setExpanded] = useState(() => new Set());
-  const [preview, setPreview] = useState(false);
+  // View mode for markdown tabs: "edit" (source only), "split" (source +
+  // preview side-by-side), "preview" (rendered only). Non-md tabs always
+  // render in edit mode regardless of this state.
+  const [viewMode, setViewMode] = useState("edit");
   const editorContainerRef = useRef(null);
   const viewRef = useRef(null);
   const cmRef = useRef(null);
@@ -3128,7 +3150,7 @@ function EditorPanel({ onClose } = {}) {
         viewRef.current = null;
       }
     };
-  }, [cmReady, activeIdx, tabs[activeIdx]?.path, preview]);
+  }, [cmReady, activeIdx, tabs[activeIdx]?.path, viewMode]);
 
   const closeTab = useCallback((idx) => {
     const tab = tabsRef.current[idx];
@@ -3338,12 +3360,23 @@ function EditorPanel({ onClose } = {}) {
               ${
                 langFromPath(tab.path) === "markdown"
                   ? html`
-                  <button
-                    class=${preview ? "primary" : ""}
-                    style="margin-left: auto;"
-                    onClick=${() => setPreview((p) => !p)}
-                    title="toggle markdown preview"
-                  >${preview ? "Edit" : "Preview"}</button>
+                  <div class="view-mode-group" style="margin-left: auto;">
+                    <button
+                      class=${`view-mode ${viewMode === "edit" ? "active" : ""}`}
+                      onClick=${() => setViewMode("edit")}
+                      title="source only"
+                    >Edit</button>
+                    <button
+                      class=${`view-mode ${viewMode === "split" ? "active" : ""}`}
+                      onClick=${() => setViewMode("split")}
+                      title="source + preview side-by-side"
+                    >Split</button>
+                    <button
+                      class=${`view-mode ${viewMode === "preview" ? "active" : ""}`}
+                      onClick=${() => setViewMode("preview")}
+                      title="rendered only"
+                    >Preview</button>
+                  </div>
                 `
                   : null
               }
@@ -3355,16 +3388,32 @@ function EditorPanel({ onClose } = {}) {
               >${tab.dirty ? "Save (⌘S)" : "Saved"}</button>
             </div>
             ${error ? html`<div class="notice err">${error}</div>` : null}
-            ${
-              preview && langFromPath(tab.path) === "markdown"
-                ? html`
-                <div
-                  class="editor-host editor-md-preview md"
-                  dangerouslySetInnerHTML=${{ __html: previewMarked.parse(tab.content ?? "") }}
-                ></div>
-              `
-                : html`<div ref=${editorContainerRef} class="editor-host"></div>`
-            }
+            ${(() => {
+              const isMd = langFromPath(tab.path) === "markdown";
+              const mode = isMd ? viewMode : "edit";
+              if (mode === "preview") {
+                return html`
+                  <div
+                    class="editor-host editor-md-preview md"
+                    dangerouslySetInnerHTML=${{ __html: previewMarked.parse(tab.content ?? "") }}
+                  ></div>
+                `;
+              }
+              if (mode === "split") {
+                return html`
+                  <div class="editor-split">
+                    <div ref=${editorContainerRef} class="editor-host editor-split-pane"></div>
+                    <div
+                      class="editor-host editor-md-preview md editor-split-pane"
+                      dangerouslySetInnerHTML=${{
+                        __html: previewMarked.parse(tab.content ?? ""),
+                      }}
+                    ></div>
+                  </div>
+                `;
+              }
+              return html`<div ref=${editorContainerRef} class="editor-host"></div>`;
+            })()}
           `
             : html`
             <div class="editor-empty">
@@ -3745,6 +3794,22 @@ class ErrorBoundary extends Component {
 function App() {
   const [activeId, setActiveId] = useState("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
+  // Desktop "icon only" collapse — narrow sidebar that shows just the
+  // glyphs. Persisted so the choice survives reload.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("rx.sidebarCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("rx.sidebarCollapsed", sidebarCollapsed ? "1" : "0");
+    } catch {
+      /* private mode / disabled storage — ignore */
+    }
+  }, [sidebarCollapsed]);
   // Editor drawer — opens whenever any panel fires "open-file" via
   // appBus. Lives at the App level so the editor's tab state persists
   // across sidebar-tab switches; you can open a file from Chat, switch
@@ -3801,11 +3866,11 @@ function App() {
   }, []);
 
   return html`
-    <div class="sidebar ${sidebarOpen ? "open" : ""}">
+    <div class=${`sidebar ${sidebarOpen ? "open" : ""} ${sidebarCollapsed ? "collapsed" : ""}`}>
       <div class="sidebar-header">
-        <div class="sidebar-brand"><span class="glyph">◈</span> REASONIX</div>
-        <div class="sidebar-version">dashboard</div>
-        <div class="sidebar-mode">${MODE}</div>
+        <div class="sidebar-brand" title="Reasonix"><span class="glyph">◈</span><span class="sidebar-label"> REASONIX</span></div>
+        <div class="sidebar-version sidebar-label">dashboard</div>
+        <div class="sidebar-mode sidebar-label">${MODE}</div>
       </div>
       <div class="gradient-rule"></div>
       <div class="sidebar-tabs">
@@ -3814,15 +3879,21 @@ function App() {
           <div
             class="tab ${tab.id === active.id ? "active" : ""} ${!tab.ready ? "tab-stub" : ""}"
             onClick=${() => tab.ready && pickTab(tab.id)}
+            title=${tab.name}
           >
             <span class="glyph">${tab.glyph}</span>
-            <span>${tab.name}</span>
-            ${tab.badge ? html`<span class="badge">${tab.badge}</span>` : null}
+            <span class="sidebar-label">${tab.name}</span>
+            ${tab.badge ? html`<span class="badge sidebar-label">${tab.badge}</span>` : null}
           </div>
         `,
         )}
       </div>
-      <div class="sidebar-footer">127.0.0.1 only · token-gated</div>
+      <button
+        class="sidebar-collapse-toggle"
+        onClick=${() => setSidebarCollapsed((c) => !c)}
+        title=${sidebarCollapsed ? "expand sidebar" : "collapse to icons"}
+      >${sidebarCollapsed ? "▶" : "◀"}<span class="sidebar-label">  ${sidebarCollapsed ? "expand" : "collapse"}</span></button>
+      <div class="sidebar-footer sidebar-label">127.0.0.1 only · token-gated</div>
     </div>
     <div class="sidebar-backdrop" onClick=${() => setSidebarOpen(false)}></div>
     <button class="menu-toggle" onClick=${() => setSidebarOpen((s) => !s)} aria-label="Toggle sidebar">≡</button>

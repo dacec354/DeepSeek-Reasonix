@@ -30,3 +30,6 @@ sessions/
 .reasonix/semantic/
 .reasonix/sessions/
 .reasonix/semantic-skip
+# Scratch entry regenerated each time scripts/bundle-codemirror.mjs runs.
+scripts/.cm-entry.mjs
+

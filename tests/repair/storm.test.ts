@@ -43,4 +43,39 @@ describe("StormBreaker", () => {
     // so a single new "x" should not suppress.
     expect(sb.inspect(call("x", "{}")).suppress).toBe(false);
   });
+
+  it("an intervening mutating call resets the window for re-reads of the same path", () => {
+    // Caller supplies the predicate — production wires it from the
+    // ToolRegistry's readOnly flag; tests fake it with a name set.
+    const mutators = new Set(["edit_file", "write_file"]);
+    const sb = new StormBreaker(6, 3, (c) => mutators.has(c.function?.name ?? ""));
+    const args = '{"path":"src/env.ts"}';
+    expect(sb.inspect(call("read_file", args)).suppress).toBe(false);
+    expect(sb.inspect(call("edit_file", '{"path":"src/env.ts","..."}')).suppress).toBe(false);
+    expect(sb.inspect(call("read_file", args)).suppress).toBe(false);
+    expect(sb.inspect(call("edit_file", '{"path":"src/env.ts","..."}')).suppress).toBe(false);
+    // 3rd read_file with identical args — would trip the breaker pre-fix,
+    // but each edit_file legitimately changed the file in between.
+    expect(sb.inspect(call("read_file", args)).suppress).toBe(false);
+  });
+
+  it("predicate-flagged write_file resets the window", () => {
+    const mutators = new Set(["write_file"]);
+    const sb = new StormBreaker(6, 3, (c) => mutators.has(c.function?.name ?? ""));
+    expect(sb.inspect(call("read_file", "{}")).suppress).toBe(false);
+    expect(sb.inspect(call("read_file", "{}")).suppress).toBe(false);
+    expect(sb.inspect(call("write_file", "{}")).suppress).toBe(false);
+    // Buffer cleared by write_file — a fresh pair of reads is now safe.
+    expect(sb.inspect(call("read_file", "{}")).suppress).toBe(false);
+    expect(sb.inspect(call("read_file", "{}")).suppress).toBe(false);
+  });
+
+  it("with no predicate, every tool counts (back-compat)", () => {
+    // No isMutating wired → original semantics. Three identical calls
+    // to any tool name still suppresses the third.
+    const sb = new StormBreaker(6, 3);
+    sb.inspect(call("edit_file", "{}"));
+    sb.inspect(call("edit_file", "{}"));
+    expect(sb.inspect(call("edit_file", "{}")).suppress).toBe(true);
+  });
 });

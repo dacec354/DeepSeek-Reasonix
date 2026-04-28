@@ -264,6 +264,11 @@ export type ActiveModal =
   | {
       kind: "edit-review";
       path: string;
+      /** Block being reviewed — both halves so the dashboard can render
+       * a side-by-side diff with syntax highlighting. `preview` stays
+       * around for older clients that just stream a flat string. */
+      search: string;
+      replace: string;
       preview: string;
       total: number;
       remaining: number;

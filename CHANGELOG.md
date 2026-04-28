@@ -3,6 +3,100 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.6] — 2026-04-28
+
+**Headline:** Bigger fixes for the things you actually look at:
+the edit-review modal is now a real side-by-side diff, the
+sidebar collapses to icons, and the call-storm breaker stops
+mistaking legitimate read → edit → verify cycles for storms.
+
+### Edit review modal
+
+- Two-column **side-by-side diff** ("before" left, "after" right)
+  with hljs syntax highlighting per the file's language. Adjacent
+  removed/added line runs pair into rows so the change reads
+  cleanly across the gutter.
+- Red tint + `−` marker on the removed side; green tint + `+` on
+  the added side; context lines render unchanged.
+- Modal payload (`{ kind: "edit-review" }`) gained `search` and
+  `replace` fields holding the full block contents — the old
+  truncated `preview` string stays alongside for older clients.
+  `src/cli/ui/App.tsx` and `src/server/context.ts` updated.
+
+### Sidebar — icon-only collapse
+
+- New `◀ collapse` button at the bottom of the sidebar shrinks
+  it from 220px → 52px and hides every label, leaving just the
+  glyphs. `▶ expand` brings labels back. Choice persists in
+  `localStorage` (`rx.sidebarCollapsed`).
+- Tabs in the collapsed state center the glyph and keep the
+  primary-color active indicator.
+
+### Call-storm breaker — false-positive fix
+
+The `read → edit → verify → edit → verify` pattern was tripping
+the storm protection (3 identical `read_file` calls within the
+window). The fix sources its "did this call mutate state?"
+signal from the existing ToolRegistry — each tool already
+declares `readOnly` / `readOnlyCheck` for plan-mode gating, so
+no new flag was added. The breaker now:
+
+- Tags every buffer entry as read-only or mutating based on the
+  predicate the loop wires in (`def.readOnly === true`, with
+  `readOnlyCheck` taking precedence on the actual args).
+- On a mutating call, drops prior read-only entries from the
+  window — a re-read after `edit_file` is fresh, not a repeat.
+- Keeps mutator entries alongside, so a model looping on
+  identical `edit_file` calls still trips on the threshold.
+
+`StormBreaker(window, threshold, isMutating?)` is the public
+shape; `ToolCallRepair` accepts an `isMutating` predicate.
+Without one (older callers, isolated tests) every call counts —
+back-compat preserved. Three new storm tests cover the cases.
+
+## [0.12.5] — 2026-04-28
+
+**Headline:** Stop loading CodeMirror from a CDN, fix the legacy
+preset migration that broke 2 CI tests, and replace the markdown
+preview toggle with a proper Edit / Split / Preview tri-state.
+
+### Editor — local CodeMirror bundle
+
+- `scripts/bundle-codemirror.mjs` — esbuild-based bundler that
+  pulls every `@codemirror/*` package from `node_modules` and
+  produces `dashboard/codemirror.js` (~937 KB minified ESM).
+- `npm run build:cm` rebuilds it. Output is committed so a fresh
+  `npm install` doesn't have to run esbuild.
+- `dashboard/app.js` now does `import("/assets/codemirror.js")`
+  instead of 21 `import("https://esm.sh/...")` calls. One copy of
+  every package = no Tag identity issues, no transitive-version
+  drift between cold loads.
+- `serveAsset` learns to serve `codemirror.js`. `package.json`
+  ships the bundle in `files`. Biome ignores the minified file.
+- `@codemirror/*` + `esbuild` added to devDependencies — they
+  feed the bundler, they don't end up in the runtime install.
+
+### Editor — markdown view modes
+
+- Replaced the `Preview`/`Edit` boolean with a three-state
+  segmented control: **Edit** (source only, default), **Split**
+  (source on the left, rendered on the right, with a divider),
+  **Preview** (rendered only). Buttons live in the editor bar
+  and are markdown-only — non-md tabs hide the group entirely.
+- The CodeMirror remount effect now keys on `viewMode`, so
+  flipping between Edit and Split doesn't leave a stale view.
+
+### Preset rework — CI fix
+
+`resolvePreset` was collapsing every legacy name (`fast`, `smart`,
+`max`) to `auto`, which made two `tests/resolve.test.ts` cases
+fail because they assert the legacy mapping that older config
+files depend on. Restored the original semantics:
+- `fast` → flash with `effort: high` (no auto-escalate)
+- `smart` → auto (flash + max + auto-escalate)
+- `max` → pro
+Anything else still collapses to auto. Suite back to 1568 / 1568.
+
 ## [0.12.4] — 2026-04-28
 
 **Headline:** The two real editor problems that 0.12.2/3 didn't
