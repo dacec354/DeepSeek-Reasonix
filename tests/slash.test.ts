@@ -299,30 +299,30 @@ describe("handleSlash", () => {
     expect(r.info).toMatch(/\/compact/);
   });
 
-  it("/preset fast = v4-flash + effort=high, no harvest, no branch", () => {
+  it("/preset auto = v4-flash + auto-escalate, no harvest, no branch", () => {
     const loop = makeLoop();
     handleSlash("model", ["deepseek-v4-pro"], loop);
     handleSlash("harvest", ["on"], loop);
     handleSlash("branch", ["3"], loop);
-    handleSlash("preset", ["fast"], loop);
-    expect(loop.model).toBe("deepseek-v4-flash");
-    expect(loop.reasoningEffort).toBe("high");
-    expect(loop.harvestEnabled).toBe(false);
-    expect(loop.branchEnabled).toBe(false);
-  });
-
-  it("/preset smart = v4-flash + effort=max, no harvest, no branch", () => {
-    const loop = makeLoop();
-    handleSlash("preset", ["smart"], loop);
+    handleSlash("preset", ["auto"], loop);
     expect(loop.model).toBe("deepseek-v4-flash");
     expect(loop.reasoningEffort).toBe("max");
     expect(loop.harvestEnabled).toBe(false);
     expect(loop.branchEnabled).toBe(false);
   });
 
-  it("/preset max = v4-pro + effort=max, no harvest, no branch", () => {
+  it("/preset flash = v4-flash, no auto-escalate", () => {
     const loop = makeLoop();
-    handleSlash("preset", ["max"], loop);
+    handleSlash("preset", ["flash"], loop);
+    expect(loop.model).toBe("deepseek-v4-flash");
+    expect(loop.reasoningEffort).toBe("max");
+    expect(loop.harvestEnabled).toBe(false);
+    expect(loop.branchEnabled).toBe(false);
+  });
+
+  it("/preset pro = v4-pro pinned, no harvest, no branch", () => {
+    const loop = makeLoop();
+    handleSlash("preset", ["pro"], loop);
     expect(loop.model).toBe("deepseek-v4-pro");
     expect(loop.reasoningEffort).toBe("max");
     expect(loop.harvestEnabled).toBe(false);
@@ -338,9 +338,9 @@ describe("handleSlash", () => {
   it("/help mentions presets", () => {
     const r = handleSlash("help", [], makeLoop());
     expect(r.info).toMatch(/Presets/);
-    expect(r.info).toMatch(/fast/);
-    expect(r.info).toMatch(/smart/);
-    expect(r.info).toMatch(/max/);
+    expect(r.info).toMatch(/auto/);
+    expect(r.info).toMatch(/flash/);
+    expect(r.info).toMatch(/pro/);
   });
 
   it("/help mentions sessions", () => {
@@ -576,11 +576,11 @@ describe("handleSlash", () => {
     });
 
     it("activates enum picker for /preset", () => {
-      const ctx = detectSlashArgContext("/preset fa");
+      const ctx = detectSlashArgContext("/preset fl");
       expect(ctx).not.toBeNull();
       expect(ctx!.kind).toBe("picker");
-      expect(ctx!.spec.argCompleter).toEqual(["fast", "smart", "max"]);
-      expect(ctx!.partial).toBe("fa");
+      expect(ctx!.spec.argCompleter).toEqual(["auto", "flash", "pro"]);
+      expect(ctx!.partial).toBe("fl");
       // Offset is the char index where the partial starts in the buffer.
       expect(ctx!.partialOffset).toBe("/preset ".length);
     });
@@ -604,8 +604,8 @@ describe("handleSlash", () => {
     });
 
     it("surfaces a hint-only row once the user types a space inside the partial", () => {
-      // "/preset fast foo" — typed past the one enum slot.
-      const ctx = detectSlashArgContext("/preset fast foo");
+      // "/preset auto foo" — typed past the one enum slot.
+      const ctx = detectSlashArgContext("/preset auto foo");
       expect(ctx).not.toBeNull();
       expect(ctx!.kind).toBe("hint");
     });

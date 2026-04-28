@@ -3,6 +3,21 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.15] — 2026-04-28
+
+**Headline:** Every user-facing string that still said
+`fast / smart / max` is now `auto / flash / pro` — the canonical
+names presets have used since the autoEscalate split. CLI flags
+(`chat --preset`, `run --preset`), `/help`'s preset table,
+`/preset`'s argHint and completer, the slash handler's `usage:`
+line, and the `code` command description all updated.
+
+Old `config.json` files keep working: `resolvePreset` still maps
+`fast → flash·effort=high`, `smart → auto`, `max → pro`. What
+changed is the interactive surface — `/preset fast` now prints
+usage instead of silently doing the right thing, so the in-chat
+vocabulary matches what's documented.
+
 ## [0.12.14] — 2026-04-28
 
 **Headline:** Three TUI confirmations the dashboard couldn't see —

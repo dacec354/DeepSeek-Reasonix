@@ -6,7 +6,7 @@
  *   1. Explicit per-setting CLI flag (`--model`, `--harvest`, `--branch`, `--mcp`)
  *   2. Explicit `--preset <name>` CLI flag
  *   3. `config.preset` from `~/.reasonix/config.json` (set by `reasonix setup`)
- *   4. Hardcoded "smart" preset defaults (flash + effort=max)
+ *   4. Hardcoded "auto" preset defaults (flash → pro on hard turns)
  *
  * Keeping this logic in one place — rather than duplicating across
  * `chat` and `run` — means the precedence rule only lives in one unit

@@ -59,7 +59,7 @@ export function Wizard({ onComplete, onCancel, existingApiKey, initial }: Wizard
   const [step, setStep] = useState<Step>(existingApiKey ? "preset" : "apiKey");
   const [data, setData] = useState<WizardData>({
     apiKey: existingApiKey ?? "",
-    preset: initial?.preset ?? "fast",
+    preset: initial?.preset ?? "auto",
     selectedCatalog: deriveInitialCatalog(initial?.mcp ?? []),
     catalogArgs: {},
   });

@@ -70,7 +70,7 @@ export interface ReasonixConfig {
   baseUrl?: string;
   /**
    * Default preset for `reasonix chat` / `reasonix run` when no flags override.
-   * Maps to model + harvest + branch combos (see presets.ts). Missing → "fast".
+   * Maps to model + autoEscalate (see presets.ts). Missing → "auto".
    */
   preset?: PresetName;
   /**

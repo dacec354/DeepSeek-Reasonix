@@ -1,4 +1,5 @@
 import { saveReasoningEffort } from "../../../../config.js";
+import { PRESETS } from "../../presets.js";
 import type { SlashHandler } from "../dispatch.js";
 
 const model: SlashHandler = (args, loop, ctx) => {
@@ -73,39 +74,43 @@ const preset: SlashHandler = (args, loop) => {
       /* disk full / perms — runtime change still took effect */
     }
   };
-  if (name === "fast" || name === "default") {
+  if (name === "auto") {
+    const p = PRESETS.auto;
     loop.configure({
-      model: "deepseek-v4-flash",
-      reasoningEffort: "high",
-      harvest: false,
-      branch: 1,
+      model: p.model,
+      autoEscalate: p.autoEscalate,
+      reasoningEffort: p.reasoningEffort,
+      harvest: p.harvest,
+      branch: p.branch,
     });
-    applyAndPersist("high");
-    return { info: "preset → fast  (v4-flash · effort=high · cheapest)" };
+    applyAndPersist(p.reasoningEffort);
+    return { info: "preset → auto  (v4-flash → v4-pro on hard turns · default)" };
   }
-  if (name === "smart") {
+  if (name === "flash") {
+    const p = PRESETS.flash;
     loop.configure({
-      model: "deepseek-v4-flash",
-      reasoningEffort: "max",
-      harvest: false,
-      branch: 1,
+      model: p.model,
+      autoEscalate: p.autoEscalate,
+      reasoningEffort: p.reasoningEffort,
+      harvest: p.harvest,
+      branch: p.branch,
     });
-    applyAndPersist("max");
-    return { info: "preset → smart  (v4-flash · effort=max · default · ~1.5× fast)" };
+    applyAndPersist(p.reasoningEffort);
+    return { info: "preset → flash  (v4-flash always · cheapest · /pro still bumps one turn)" };
   }
-  if (name === "max" || name === "best") {
+  if (name === "pro") {
+    const p = PRESETS.pro;
     loop.configure({
-      model: "deepseek-v4-pro",
-      reasoningEffort: "max",
-      harvest: false,
-      branch: 1,
+      model: p.model,
+      autoEscalate: p.autoEscalate,
+      reasoningEffort: p.reasoningEffort,
+      harvest: p.harvest,
+      branch: p.branch,
     });
-    applyAndPersist("max");
-    return {
-      info: "preset → max  (v4-pro · effort=max · ~12× fast · save for hard tasks, or use /pro for a single-turn bump)",
-    };
+    applyAndPersist(p.reasoningEffort);
+    return { info: "preset → pro  (v4-pro always · ~3× flash · for hard multi-turn work)" };
   }
-  return { info: "usage: /preset <fast|smart|max>" };
+  return { info: "usage: /preset <auto|flash|pro>" };
 };
 
 const branch: SlashHandler = (args, loop) => {

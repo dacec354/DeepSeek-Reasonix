@@ -32,7 +32,7 @@ export interface OverviewResponse {
   /** Total registered tools (builtin + MCP-bridged + skill tools). */
   toolCount: number | null;
   /**
-   * Persisted preset (fast / smart / max). Surfaced here so the chat
+   * Persisted preset (auto / flash / pro). Surfaced here so the chat
    * header's preset picker can poll one endpoint instead of two.
    */
   preset: string;

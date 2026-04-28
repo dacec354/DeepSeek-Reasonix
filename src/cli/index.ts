@@ -90,7 +90,7 @@ program
 program
   .command("code [dir]")
   .description(
-    "Code-editing chat — filesystem tools rooted at <dir> (default: cwd), coding system prompt, v4-flash. Model proposes SEARCH/REPLACE blocks; Reasonix applies them to disk. Use /preset max or /pro to escalate to v4-pro on hard tasks.",
+    "Code-editing chat — filesystem tools rooted at <dir> (default: cwd), coding system prompt, v4-flash baseline. Model proposes SEARCH/REPLACE blocks; Reasonix applies them to disk. Use /preset pro or /pro to lock v4-pro on hard tasks.",
   )
   .option("-m, --model <id>", "Override default model (v4-flash)")
   .option("--no-session", "Disable session persistence for this run")
@@ -126,7 +126,7 @@ program
   .option("--transcript <path>", "Write a JSONL transcript to this path")
   .option(
     "--preset <name>",
-    "Model + effort bundle. One of: fast (flash·high), smart (flash·max, default), max (pro·max). Overrides config.preset.",
+    "Model bundle. One of: auto (flash → pro on hard turns, default), flash (always flash), pro (always pro). Overrides config.preset.",
   )
   .option(
     "--harvest",
@@ -202,7 +202,7 @@ program
   .description("Run a single task non-interactively, streaming output.")
   .option("-m, --model <id>", "DeepSeek model id (overrides preset)")
   .option("-s, --system <prompt>", "System prompt", DEFAULT_SYSTEM)
-  .option("--preset <name>", "Bundle of model + harvest + branch: fast | smart | max")
+  .option("--preset <name>", "Model bundle: auto | flash | pro (default: auto)")
   .option("--harvest", "Extract typed plan state from R1 reasoning (Pillar 2)")
   .option(
     "--branch <n>",

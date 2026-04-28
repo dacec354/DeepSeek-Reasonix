@@ -5,9 +5,9 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
   { cmd: "status", summary: "current model, flags, context, session" },
   {
     cmd: "preset",
-    argsHint: "<fast|smart|max>",
-    summary: "one-tap model + harvest + branch bundle",
-    argCompleter: ["fast", "smart", "max"],
+    argsHint: "<auto|flash|pro>",
+    summary: "model bundle — auto escalates flash → pro, flash/pro lock",
+    argCompleter: ["auto", "flash", "pro"],
   },
   {
     cmd: "model",
