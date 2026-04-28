@@ -1578,6 +1578,16 @@ export class CacheFirstLoop {
         }
       }
 
+      // When `change_workspace` fires its WorkspaceConfirmationError,
+      // any subsequent calls in the same parallel batch would dispatch
+      // against the OLD sandbox before the user has approved the switch
+      // — a silent data-loss footgun (file lands in the old project).
+      // Once we observe one of these in this batch, every remaining
+      // call gets a synthetic "skipped" result instead of running.
+      // Tool-call ↔ tool pairing stays intact so DeepSeek doesn't 400
+      // on the next turn; the model sees the deferral and the user
+      // gets the modal first.
+      let workspaceSwitchPending = false;
       for (const call of repairedCalls) {
         const name = call.function?.name ?? "";
         const args = call.function?.arguments ?? "{}";
@@ -1612,7 +1622,16 @@ export class CacheFirstLoop {
         for (const w of hookWarnings(preReport.outcomes, this._turn)) yield w;
 
         let result: string;
-        if (preReport.blocked) {
+        if (workspaceSwitchPending) {
+          // Tool fired in the same parallel batch as a change_workspace
+          // that's awaiting user confirmation. Don't dispatch — the
+          // sandbox root may flip under us. Surface a clear deferral
+          // so the model retries on the next turn (where rootDir is
+          // either the new path or unchanged after a deny).
+          result = JSON.stringify({
+            error: `${name}: deferred because change_workspace in the same batch is awaiting the user's approval. Re-issue this call on your next turn — the sandbox root may have changed.`,
+          });
+        } else if (preReport.blocked) {
           const blocking = preReport.outcomes[preReport.outcomes.length - 1];
           const reason = (
             blocking?.stderr ||
@@ -1625,6 +1644,11 @@ export class CacheFirstLoop {
             signal,
             maxResultTokens: DEFAULT_MAX_RESULT_TOKENS,
           });
+          // Detect a workspace-switch confirmation marker in this dispatch
+          // result; flip the gate so the rest of the batch defers.
+          if (name === "change_workspace" && result.includes('"WorkspaceConfirmationError:')) {
+            workspaceSwitchPending = true;
+          }
 
           // PostToolUse hooks — block is meaningless after the fact, so
           // every non-pass outcome is a warning. Hooks here are the

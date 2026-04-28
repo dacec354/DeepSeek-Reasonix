@@ -1136,9 +1136,103 @@ function EditReviewModal({ modal, onResolve }) {
   `;
 }
 
+function WorkspaceModal({ modal, onResolve }) {
+  return html`
+    <${ModalCard}
+      accent="#fbbf24"
+      icon="◇"
+      title="model wants to switch workspace"
+      subtitle="every subsequent file / shell / memory tool resolves against the new root"
+    >
+      <div class="modal-cmd"><span class="modal-cmd-prompt">→</span> <code>${modal.path}</code></div>
+      <div class="modal-actions">
+        <button class="primary" onClick=${() => onResolve("workspace", "switch")}>Switch (Enter)</button>
+        <button class="danger" onClick=${() => onResolve("workspace", "deny")}>Deny (Esc)</button>
+      </div>
+    <//>
+  `;
+}
+
+function CheckpointModal({ modal, onResolve }) {
+  const [reviseText, setReviseText] = useState("");
+  const [staged, setStaged] = useState(false);
+  const label = modal.title ? `${modal.stepId} · ${modal.title}` : modal.stepId;
+  const counter = modal.total > 0 ? ` (${modal.completed}/${modal.total})` : "";
+  return html`
+    <${ModalCard}
+      accent="#a5f3fc"
+      icon="✓"
+      title=${`step complete${counter}`}
+      subtitle=${label}
+    >
+      ${
+        staged
+          ? html`
+          <textarea
+            placeholder="What needs to change before the next step? Leave blank to just continue."
+            rows="3"
+            value=${reviseText}
+            onInput=${(e) => setReviseText(e.target.value)}
+          ></textarea>
+          <div class="modal-actions">
+            <button class="primary" onClick=${() => onResolve("checkpoint", "revise", reviseText)}>Send revision</button>
+            <button onClick=${() => {
+              setStaged(false);
+              setReviseText("");
+            }}>Back</button>
+          </div>
+        `
+          : html`
+          <div class="modal-actions">
+            <button class="primary" onClick=${() => onResolve("checkpoint", "continue")}>Continue</button>
+            <button onClick=${() => setStaged(true)}>Revise…</button>
+            <button class="danger" onClick=${() => onResolve("checkpoint", "stop")}>Stop</button>
+          </div>
+        `
+      }
+    <//>
+  `;
+}
+
+function RevisionModal({ modal, onResolve }) {
+  const riskColor = (r) =>
+    r === "high" ? "#f87171" : r === "med" ? "#fbbf24" : r === "low" ? "#86efac" : "#9ca3af";
+  return html`
+    <${ModalCard}
+      accent="#c4b5fd"
+      icon="✎"
+      title="model proposed a plan revision"
+      subtitle=${modal.summary || modal.reason}
+    >
+      <div class="modal-revise-reason">${modal.reason}</div>
+      <ol class="modal-revise-steps">
+        ${modal.remainingSteps.map(
+          (s) => html`
+            <li key=${s.id}>
+              <span class="modal-revise-dot" style=${`background:${riskColor(s.risk)}`}></span>
+              <span class="modal-revise-id">${s.id}</span>
+              <span class="modal-revise-title">${s.title}</span>
+              <span class="modal-revise-action">${s.action}</span>
+            </li>
+          `,
+        )}
+      </ol>
+      <div class="modal-actions">
+        <button class="primary" onClick=${() => onResolve("revision", "accept")}>Accept</button>
+        <button class="danger" onClick=${() => onResolve("revision", "reject")}>Reject</button>
+      </div>
+    <//>
+  `;
+}
+
 function ChatPanel() {
   const [messages, setMessages] = useState([]);
   const [streaming, setStreaming] = useState(null); // { id, text, reasoning }
+  // Tool currently dispatched but not yet returning. Set on `tool_start`,
+  // cleared on `tool` / `error`. Drives the in-flight row so the user
+  // sees what's running (path, command, char counts) instead of a
+  // generic "waiting" — file writes especially feel hung otherwise.
+  const [activeTool, setActiveTool] = useState(null); // { id, toolName, args }
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState("");
   const [error, setError] = useState(null);
@@ -1278,17 +1372,16 @@ function ChatPanel() {
         return;
       }
       if (dash.kind === "tool_start") {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `start-${dash.id}`,
-            role: "info",
-            text: `▸ ${dash.toolName} starting…`,
-          },
-        ]);
+        // Surface the dispatched tool + its args in the in-flight row.
+        // No info-row placeholder: the InFlightRow now renders the
+        // detail (path / command / char count) and the result card
+        // appears when the `tool` event lands. Two rows for one tool
+        // call was redundant noise.
+        setActiveTool({ id: dash.id, toolName: dash.toolName, args: dash.args });
         return;
       }
       if (dash.kind === "tool") {
+        setActiveTool((cur) => (cur && cur.id === dash.id ? null : cur));
         setMessages((prev) => [
           ...prev,
           {
@@ -1302,6 +1395,9 @@ function ChatPanel() {
         return;
       }
       if (dash.kind === "warning" || dash.kind === "error" || dash.kind === "info") {
+        if (dash.kind === "error") {
+          setActiveTool(null);
+        }
         setMessages((prev) => [...prev, { id: dash.id, role: dash.kind, text: dash.text }]);
         return;
       }
@@ -1368,6 +1464,7 @@ function ChatPanel() {
       await api("/submit", { method: "POST", body: { prompt: "/new" } });
       setMessages([]);
       setStreaming(null);
+      setActiveTool(null);
       showToast("new conversation", "info");
       // Refetch to reconcile in case the slash queued an info row.
       setTimeout(async () => {
@@ -1388,6 +1485,7 @@ function ChatPanel() {
       await api("/submit", { method: "POST", body: { prompt: "/clear" } });
       setMessages([]);
       setStreaming(null);
+      setActiveTool(null);
       showToast("scrollback cleared", "info");
       setTimeout(async () => {
         try {
@@ -1676,7 +1774,13 @@ function ChatPanel() {
                 ? html`<${PlanModal} modal=${modal} onResolve=${resolveModal} />`
                 : modal.kind === "edit-review"
                   ? html`<${EditReviewModal} modal=${modal} onResolve=${resolveModal} />`
-                  : null
+                  : modal.kind === "workspace"
+                    ? html`<${WorkspaceModal} modal=${modal} onResolve=${resolveModal} />`
+                    : modal.kind === "checkpoint"
+                      ? html`<${CheckpointModal} modal=${modal} onResolve=${resolveModal} />`
+                      : modal.kind === "revision"
+                        ? html`<${RevisionModal} modal=${modal} onResolve=${resolveModal} />`
+                        : null
           : null
       }
 
@@ -1724,6 +1828,7 @@ function ChatPanel() {
         busy
           ? html`<${InFlightRow}
               streaming=${streaming}
+              activeTool=${activeTool}
               startedAt=${turnStartedAt}
               statusLine=${statusLine}
               onAbort=${abort}
@@ -1736,18 +1841,55 @@ function ChatPanel() {
   `;
 }
 
+// Summarize the dispatched tool in one line — what the user wants to
+// know is "is this hung or really doing X". Per-tool projection so a
+// write_file says "→ /path/foo (12,345 ch)" instead of just "tool is
+// running". Returns null for tools we don't have a custom shape for;
+// the row falls back to the bare tool name.
+function summarizeActiveTool(activeTool) {
+  if (!activeTool) return null;
+  const name = activeTool.toolName ?? "tool";
+  const args = parseToolArgs(activeTool.args);
+  const path = args?.path ?? args?.file_path ?? args?.filename;
+  if (name === "write_file" && path) {
+    const len = typeof args?.content === "string" ? args.content.length : null;
+    return `${name} → ${path}${len != null ? ` (${len.toLocaleString()} ch)` : ""}`;
+  }
+  if ((name === "edit_file" || name.endsWith("_edit_file")) && path) {
+    return `${name} → ${path}`;
+  }
+  if ((name === "run_command" || name === "run_background") && typeof args?.command === "string") {
+    const c = args.command;
+    return `${name} → $ ${c.length > 80 ? `${c.slice(0, 80)}…` : c}`;
+  }
+  if ((name === "read_file" || name === "list_files" || name === "search_files") && path) {
+    return `${name} → ${path}`;
+  }
+  if (path) return `${name} → ${path}`;
+  return name;
+}
+
 // Live "what's the model doing right now" strip. Lives just above the
 // ChatStatusBar so the user's eyes don't have to leave the input area
 // to see whether the turn is alive — ticks every 500ms via the parent's
 // nowTick so the seconds counter shows visible motion even when the
 // SSE stream is silent (model thinking, waiting on a tool, etc).
-function InFlightRow({ streaming, startedAt, statusLine, onAbort, tick: _tick }) {
+function InFlightRow({ streaming, activeTool, startedAt, statusLine, onAbort, tick: _tick }) {
   const elapsedMs = startedAt ? Date.now() - startedAt : 0;
   const elapsed = (elapsedMs / 1000).toFixed(1);
   const reasoningLen = streaming?.reasoning?.length ?? 0;
   const textLen = streaming?.text?.length ?? 0;
-  const phase =
-    reasoningLen > 0 && textLen === 0 ? "thinking" : textLen > 0 ? "streaming" : "waiting";
+  // Tool-running phase wins over text/reasoning since the model is
+  // blocked on the tool — even if assistant_delta has fired we want
+  // to show the active dispatch.
+  const toolSummary = summarizeActiveTool(activeTool);
+  const phase = toolSummary
+    ? "running"
+    : reasoningLen > 0 && textLen === 0
+      ? "thinking"
+      : textLen > 0
+        ? "streaming"
+        : "waiting";
   return html`
     <div class="chat-inflight">
       <span class="spinner"></span>
@@ -1755,7 +1897,15 @@ function InFlightRow({ streaming, startedAt, statusLine, onAbort, tick: _tick })
       <span class="chat-inflight-sep">·</span>
       <span class="muted">${elapsed}s</span>
       ${
-        textLen > 0 || reasoningLen > 0
+        toolSummary
+          ? html`
+            <span class="chat-inflight-sep">·</span>
+            <span class="chat-inflight-tool" title=${toolSummary}>${toolSummary}</span>
+          `
+          : null
+      }
+      ${
+        !toolSummary && (textLen > 0 || reasoningLen > 0)
           ? html`
             <span class="chat-inflight-sep">·</span>
             <span class="muted">
@@ -4229,23 +4379,41 @@ function ErrorOverlay() {
 
 // Preact ErrorBoundary — catches render-time exceptions in the App
 // subtree and dispatches them to the error overlay instead of leaving
-// the user with a blank white page. After capturing, render falls
-// back to a minimal "reload" prompt; the overlay handles the rest.
+// the user with a blank white page. Recovers automatically the first
+// few times so transient hiccups don't strand the user; if a panel
+// throws repeatedly we stop the loop and render a manual "Try again"
+// fallback so the page never looks blank-but-ticking.
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { caught: false };
+    this.state = { caught: false, lastErr: null, attempts: 0 };
   }
-  static getDerivedStateFromError() {
-    return { caught: true };
+  static getDerivedStateFromError(error) {
+    return { caught: true, lastErr: error };
   }
   componentDidCatch(error, info) {
     reportAppError(error, "render", info?.componentStack ?? "");
-    // Recover after a tick — overlay handles the user's next move.
-    setTimeout(() => this.setState({ caught: false }), 100);
+    const attempts = (this.state.attempts ?? 0) + 1;
+    if (attempts >= 3) {
+      // Stop the auto-recover loop — the panel is genuinely broken,
+      // surface a "Try again" button instead of flickering.
+      this.setState({ attempts });
+      return;
+    }
+    setTimeout(() => this.setState({ caught: false, attempts }), 100);
   }
   render() {
     if (this.state.caught) {
+      if ((this.state.attempts ?? 0) >= 3) {
+        return html`
+          <div class="boot" style="flex-direction: column; gap: 12px;">
+            <div>this panel keeps crashing — the error overlay has the trace.</div>
+            <button onClick=${() => this.setState({ caught: false, attempts: 0 })}>
+              Try again
+            </button>
+          </div>
+        `;
+      }
       return html`<div class="boot">recovering…</div>`;
     }
     return this.props.children;

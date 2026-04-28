@@ -3,6 +3,61 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.14] — 2026-04-28
+
+**Headline:** Three TUI confirmations the dashboard couldn't see —
+`change_workspace`, plan checkpoints, plan revisions — now mirror to
+the web modal layer with the same Switch/Deny/Continue/Revise/Stop/
+Accept/Reject choices the terminal exposes. Plus: a deferred-dispatch
+fix for parallel tool calls that was silently writing files into the
+old workspace, and the in-flight row finally tells you _what tool_ is
+running, not just "waiting".
+
+### Loop — workspace-switch parallel-batch fix
+
+When DeepSeek emits `change_workspace + write_file` in one assistant
+message, every call dispatched in sequence — write_file fired against
+the OLD sandbox before the user had a chance to approve the modal,
+silently dropping the new file in the wrong project. Every subsequent
+call in the same batch now gets a synthetic "deferred — re-issue on
+your next turn" result; tool_call ↔ tool pairing stays valid for
+DeepSeek's next-turn validator. Test in `tests/loop.test.ts` locks it.
+
+### Server / context
+
+- `ActiveModal` gains three new shapes: `workspace`, `checkpoint`,
+  `revision`. `getActiveModal` returns them so a freshly-connected
+  client paints the right modal mid-prompt.
+- `DashboardContext` adds `resolveWorkspaceConfirm`,
+  `resolveCheckpointConfirm` (with optional `text` for revise-with-
+  feedback in one shot), and `resolveReviseConfirm`.
+- `/api/modal/resolve` accepts the three new `kind`s with their
+  per-shape choice validation. 503 when a resolver isn't wired.
+
+### App.tsx wiring
+
+- `pendingWorkspace`, `pendingCheckpoint`, `pendingRevision` each
+  broadcast `modal-up`/`modal-down` SSE events.
+- Web's "revise + feedback in one shot" path bypasses the TUI's
+  staged-input two-step by accepting an explicit snap override on
+  `handleCheckpointReviseSubmit` — no more setStagedX → re-render →
+  ref-mirror microtask race.
+
+### Dashboard SPA
+
+- New `WorkspaceModal`, `CheckpointModal`, `RevisionModal` Preact
+  components. Modal switch dispatches them by `modal.kind`.
+- In-flight row now shows the active tool + key args (path / command
+  truncated to 80 chars / char count) once `tool_start` fires —
+  `write_file → /path/to/foo (12,345 ch)` instead of "waiting…".
+- Tool-start no longer pushes a placeholder info row. The InFlightRow
+  carries the live state; the result card replaces it on `tool`.
+- ErrorBoundary stops auto-recovering after 3 catches and renders a
+  manual "Try again" button — no more silent flickering loop.
+- `.modal-cmd` gets `overflow-x: auto` + `max-height: 240px` so a
+  pathological multi-kilobyte command can't push the rest of the
+  panel offscreen.
+
 ## [0.12.13] — 2026-04-28
 
 **Fix:** the chat feed kept yanking the user back to the bottom

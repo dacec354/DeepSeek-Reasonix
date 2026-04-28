@@ -1,6 +1,6 @@
 import type { WriteStream } from "node:fs";
 import * as pathMod from "node:path";
-import { Box, Static, Text, useApp, useStdout } from "ink";
+import { Box, Static, Text, useStdout } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AtUrlExpansion, expandAtMentions, expandAtUrls } from "../../at-mentions.js";
 import {
@@ -213,7 +213,6 @@ export function App({
   codeMode,
   noDashboard,
 }: AppProps) {
-  const { exit } = useApp();
   const [historical, setHistorical] = useState<DisplayEvent[]>([]);
   const [streaming, setStreaming] = useState<DisplayEvent | null>(null);
   const [input, setInput] = useState("");
@@ -955,6 +954,55 @@ export function App({
       broadcastDashboardEvent({ kind: "modal-down", modalKind: "edit-review" });
     };
   }, [pendingEditReview, broadcastDashboardEvent]);
+
+  useEffect(() => {
+    if (!pendingWorkspace) return;
+    broadcastDashboardEvent({
+      kind: "modal-up",
+      modal: { kind: "workspace", path: pendingWorkspace.path },
+    });
+    return () => {
+      broadcastDashboardEvent({ kind: "modal-down", modalKind: "workspace" });
+    };
+  }, [pendingWorkspace, broadcastDashboardEvent]);
+
+  useEffect(() => {
+    if (!pendingCheckpoint) return;
+    broadcastDashboardEvent({
+      kind: "modal-up",
+      modal: {
+        kind: "checkpoint",
+        stepId: pendingCheckpoint.stepId,
+        title: pendingCheckpoint.title,
+        completed: pendingCheckpoint.completed,
+        total: pendingCheckpoint.total,
+      },
+    });
+    return () => {
+      broadcastDashboardEvent({ kind: "modal-down", modalKind: "checkpoint" });
+    };
+  }, [pendingCheckpoint, broadcastDashboardEvent]);
+
+  useEffect(() => {
+    if (!pendingRevision) return;
+    broadcastDashboardEvent({
+      kind: "modal-up",
+      modal: {
+        kind: "revision",
+        reason: pendingRevision.reason,
+        remainingSteps: pendingRevision.remainingSteps.map((s) => ({
+          id: s.id,
+          title: s.title,
+          action: s.action,
+          ...(s.risk ? { risk: s.risk } : {}),
+        })),
+        ...(pendingRevision.summary ? { summary: pendingRevision.summary } : {}),
+      },
+    });
+    return () => {
+      broadcastDashboardEvent({ kind: "modal-down", modalKind: "revision" });
+    };
+  }, [pendingRevision, broadcastDashboardEvent]);
 
   // Three mutually-exclusive input-prefix pickers (slash name, @ file
   // mention, slash argument) — state + memos + commit callbacks live
@@ -1815,6 +1863,31 @@ export function App({
             remaining: pendingEdits.current.length,
           };
         }
+        if (pendingWorkspace) {
+          return { kind: "workspace", path: pendingWorkspace.path };
+        }
+        if (pendingCheckpoint) {
+          return {
+            kind: "checkpoint",
+            stepId: pendingCheckpoint.stepId,
+            title: pendingCheckpoint.title,
+            completed: pendingCheckpoint.completed,
+            total: pendingCheckpoint.total,
+          };
+        }
+        if (pendingRevision) {
+          return {
+            kind: "revision",
+            reason: pendingRevision.reason,
+            remainingSteps: pendingRevision.remainingSteps.map((s) => ({
+              id: s.id,
+              title: s.title,
+              action: s.action,
+              ...(s.risk ? { risk: s.risk } : {}),
+            })),
+            ...(pendingRevision.summary ? { summary: pendingRevision.summary } : {}),
+          };
+        }
         return null;
       },
       resolveShellConfirm: (choice) => {
@@ -1847,6 +1920,26 @@ export function App({
           resolve(choice);
         }
       },
+      resolveWorkspaceConfirm: (choice) => {
+        handleWorkspaceConfirmRef.current(choice).catch(() => undefined);
+      },
+      resolveCheckpointConfirm: (choice, text) => {
+        // Web's "revise" path sends feedback in one shot; we hand the
+        // current pending checkpoint to the submit handler directly,
+        // skipping the TUI's staged-input two-step. continue/stop fall
+        // through to the regular picker handler.
+        if (choice === "revise" && typeof text === "string") {
+          const snap = pendingCheckpoint;
+          setPendingCheckpoint(null);
+          if (!snap) return;
+          handleCheckpointReviseSubmitRef.current(text, snap).catch(() => undefined);
+          return;
+        }
+        handleCheckpointConfirmRef.current(choice).catch(() => undefined);
+      },
+      resolveReviseConfirm: (choice) => {
+        handleReviseConfirmRef.current(choice).catch(() => undefined);
+      },
       // ---------- v0.14 mutation surface ----------
       reloadHooks: () => {
         const fresh = loadHooks({ projectRoot: codeMode ? currentRootDirRef.current : undefined });
@@ -1868,6 +1961,9 @@ export function App({
     pendingShell,
     pendingChoice,
     pendingEditReview,
+    pendingWorkspace,
+    pendingCheckpoint,
+    pendingRevision,
   ]);
 
   const stopDashboard = useCallback(async (): Promise<void> => {
@@ -2222,9 +2318,12 @@ export function App({
         if (result.exit) {
           // Tear down any active /loop before quitting so the timer
           // doesn't try to fire after the process is on its way out.
+          // Use quitProcess (process.exit) rather than Ink's exit():
+          // the singleton stdin reader keeps a `data` listener attached,
+          // so exit() unmounts React but leaves the event loop alive
+          // and the terminal hangs. Same reasoning as the SIGINT path.
           if (activeLoopRef.current) stopLoop();
-          transcriptRef.current?.end();
-          exit();
+          quitProcess();
           return;
         }
         if (result.clear && result.info) {
@@ -3064,7 +3163,7 @@ export function App({
       codeShowEdit,
       codeUndo,
       currentRootDir,
-      exit,
+      quitProcess,
       hookList,
       loop,
       latestVersion,
@@ -3545,10 +3644,18 @@ export function App({
     [],
   );
 
-  /** Revise feedback submitted — push a synthetic adjustment message. */
+  /**
+   * Revise feedback submitted — push a synthetic adjustment message.
+   *
+   * Accepts an optional snap override so the web's "revise + text in
+   * one shot" path can pass the checkpoint snapshot directly without
+   * waiting on a setStagedCheckpointRevise → re-render → ref-mirror
+   * round trip. The TUI's two-step path passes no override and falls
+   * back to the staged state populated by the picker.
+   */
   const handleCheckpointReviseSubmit = useCallback(
-    async (feedback: string) => {
-      const snap = stagedCheckpointRevise;
+    async (feedback: string, snapOverride?: typeof stagedCheckpointRevise) => {
+      const snap = snapOverride ?? stagedCheckpointRevise;
       setStagedCheckpointRevise(null);
       if (!snap) return;
       const label = snap.title ? `${snap.stepId} · ${snap.title}` : snap.stepId;
@@ -3651,6 +3758,16 @@ export function App({
     async (choice: ChoiceConfirmChoice) => handleChoiceConfirmRef.current(choice),
     [],
   );
+  // Ref-mirrors so the web's resolveXxx callbacks (registered in
+  // startDashboard, frozen at boot) keep calling the latest handler.
+  const handleWorkspaceConfirmRef = useRef(handleWorkspaceConfirm);
+  useEffect(() => {
+    handleWorkspaceConfirmRef.current = handleWorkspaceConfirm;
+  }, [handleWorkspaceConfirm]);
+  const handleCheckpointReviseSubmitRef = useRef(handleCheckpointReviseSubmit);
+  useEffect(() => {
+    handleCheckpointReviseSubmitRef.current = handleCheckpointReviseSubmit;
+  }, [handleCheckpointReviseSubmit]);
 
   /** Custom free-form answer submitted — ship it as a synthetic message. */
   const handleChoiceCustomSubmit = useCallback(

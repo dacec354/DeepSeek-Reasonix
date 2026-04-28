@@ -186,6 +186,17 @@ export interface DashboardContext {
   resolvePlanConfirm?: (choice: "approve" | "refine" | "cancel", text?: string) => void;
   /** Resolve an EditConfirm review. */
   resolveEditReview?: (choice: "apply" | "reject" | "apply-rest-of-turn" | "flip-to-auto") => void;
+  /** Resolve a WorkspaceConfirm — the model called `change_workspace`. */
+  resolveWorkspaceConfirm?: (choice: "switch" | "deny") => void;
+  /**
+   * Resolve a PlanCheckpointConfirm. `revise` carries an optional
+   * free-form `text` — when present, the host bypasses the staged
+   * "type your feedback" input and submits it directly (same shortcut
+   * `resolvePlanConfirm` uses for approve/refine).
+   */
+  resolveCheckpointConfirm?: (choice: "continue" | "revise" | "stop", text?: string) => void;
+  /** Resolve a PlanReviseConfirm. */
+  resolveReviseConfirm?: (choice: "accept" | "reject") => void;
 
   // ---------- v0.14 mutation surface ----------
 
@@ -282,6 +293,29 @@ export type ActiveModal =
       preview: string;
       total: number;
       remaining: number;
+    }
+  | {
+      kind: "workspace";
+      /** Absolute, expanded destination path the model wants to switch to. */
+      path: string;
+    }
+  | {
+      kind: "checkpoint";
+      stepId: string;
+      title?: string;
+      completed: number;
+      total: number;
+    }
+  | {
+      kind: "revision";
+      reason: string;
+      remainingSteps: Array<{
+        id: string;
+        title: string;
+        action: string;
+        risk?: "low" | "med" | "high";
+      }>;
+      summary?: string;
     };
 
 /** One row of the conversation as the SPA renders it. */

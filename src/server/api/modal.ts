@@ -8,11 +8,19 @@
  * realtime; this endpoint exists so a freshly-connected client can
  * paint the modal that's already up.
  *
- * Resolution body is `{ kind: "shell"|"choice"|"plan"|"edit-review",
- * choice: ... }` shaped per kind. Each kind dispatches to a separate
- * resolve callback on `DashboardContext`; the App.tsx wiring routes
- * those into the same handlers the TUI uses, so a click on the web
- * modal is indistinguishable from a click in the terminal.
+ * Resolution body is `{ kind, choice, text? }` shaped per kind:
+ *   - `shell`        — choice: "run_once" | "always_allow" | "deny"
+ *   - `choice`       — choice: { kind: "pick"|"custom"|"cancel", ... }
+ *   - `plan`         — choice: "approve" | "refine" | "cancel" (+ text)
+ *   - `edit-review`  — choice: "apply" | "reject" | "apply-rest-of-turn" | "flip-to-auto"
+ *   - `workspace`    — choice: "switch" | "deny"
+ *   - `checkpoint`   — choice: "continue" | "revise" | "stop" (+ text on revise)
+ *   - `revision`     — choice: "accept" | "reject"
+ *
+ * Each kind dispatches to a separate resolve callback on
+ * `DashboardContext`; the App.tsx wiring routes those into the same
+ * handlers the TUI uses, so a click on the web modal is
+ * indistinguishable from a click in the terminal.
  */
 
 import type { DashboardContext } from "../context.js";
@@ -108,6 +116,42 @@ export async function handleModal(
         return { status: 400, body: { error: "edit-review choice invalid" } };
       }
       ctx.resolveEditReview(choice);
+      return { status: 200, body: { resolved: true } };
+    }
+    if (kind === "workspace") {
+      if (!ctx.resolveWorkspaceConfirm) {
+        return { status: 503, body: { error: "workspace modal resolution not wired" } };
+      }
+      if (choice !== "switch" && choice !== "deny") {
+        return { status: 400, body: { error: "workspace choice must be switch / deny" } };
+      }
+      ctx.resolveWorkspaceConfirm(choice);
+      return { status: 200, body: { resolved: true } };
+    }
+    if (kind === "checkpoint") {
+      if (!ctx.resolveCheckpointConfirm) {
+        return { status: 503, body: { error: "checkpoint modal resolution not wired" } };
+      }
+      if (choice !== "continue" && choice !== "revise" && choice !== "stop") {
+        return {
+          status: 400,
+          body: { error: "checkpoint choice must be continue / revise / stop" },
+        };
+      }
+      ctx.resolveCheckpointConfirm(
+        choice,
+        typeof text === "string" && text.trim() ? text : undefined,
+      );
+      return { status: 200, body: { resolved: true } };
+    }
+    if (kind === "revision") {
+      if (!ctx.resolveReviseConfirm) {
+        return { status: 503, body: { error: "revision modal resolution not wired" } };
+      }
+      if (choice !== "accept" && choice !== "reject") {
+        return { status: 400, body: { error: "revision choice must be accept / reject" } };
+      }
+      ctx.resolveReviseConfirm(choice);
       return { status: 200, body: { resolved: true } };
     }
     return { status: 400, body: { error: `unknown modal kind: ${String(kind)}` } };
