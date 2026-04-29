@@ -68,6 +68,12 @@ export function useAltScreen(): void {
     // with SGR coordinates. Mode 1000 = press/release only (includes
     // wheel as buttons 64/65). 1006 = SGR-encoded coords. Together
     // they let us read the wheel without intercepting drag motion.
+    //
+    // Note on kitty keyboard protocol (\x1b[>1u): tried in 0.13.x but
+    // rolled back — terminals without protocol support sometimes
+    // displayed the escape as visible chars, distorting layout. To
+    // re-enable safely we'd need terminal-feature detection (DA1 /
+    // DA2 query response) before pushing the flag.
     process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h");
     mouseTrackingOn = true;
 

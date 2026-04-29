@@ -23,7 +23,7 @@
  */
 
 import type { EditMode } from "../../config.js";
-import { type Frame, empty, stringWidth, text, vstack } from "../../frame/index.js";
+import { type Frame, empty, pad, stringWidth, text, vstack } from "../../frame/index.js";
 import type { Cell } from "../../frame/index.js";
 import type { SessionSummary } from "../../telemetry.js";
 import { COLOR, GRADIENT } from "./theme.js";
@@ -55,17 +55,32 @@ export interface ChromeFrameProps {
  * optional budget row) to a single Frame. App.tsx will render this
  * Frame as a stack of `<Box height={1}><Text>{ansi}</Text></Box>`
  * rows above the log viewport.
+ *
+ * Layout matches the legacy `<StatsPanel>`'s `paddingX={1}`: the
+ * outer Frame is `props.width` cells wide, but the actual content
+ * occupies `width - 2` cells (1-cell SPACE padding on left + right).
+ * Without that padding, terminals that reserve their last column
+ * for cursor/scrollbar (some Windows Terminal / ConPTY configs)
+ * would clip the rightmost pill — moving the right edge inward by
+ * one cell keeps every pill safely inside the visible region.
  */
 export function chromeFrame(props: ChromeFrameProps): Frame {
+  const innerWidth = Math.max(20, props.width - 2);
+  // Narrow check uses the OUTER props.width (not the padded inner)
+  // so the breakpoint tracks the user's terminal width, not the
+  // post-padding content area.
   const narrow = props.width < NARROW_BREAKPOINT;
   const coldStart = props.summary.turns <= COLD_START_TURNS;
-  const top = chromeRowFrame({ ...props, narrow, coldStart });
-  const rule = chromeRuleFrame(props.width);
+  const top = chromeRowFrame({ ...props, width: innerWidth, narrow, coldStart });
+  const rule = chromeRuleInnerFrame(innerWidth);
   const parts: Frame[] = [top, rule];
   if (props.budgetUsd !== null && props.budgetUsd !== undefined) {
-    parts.push(budgetFrame(props.summary.totalCostUsd, props.budgetUsd, props.width));
+    parts.push(budgetFrame(props.summary.totalCostUsd, props.budgetUsd, innerWidth));
   }
-  return vstack(...parts);
+  // Wrap the inner frame in 1-cell SPACE padding on both sides so the
+  // outer width matches `props.width` exactly while content stays
+  // 1 cell away from each terminal edge.
+  return pad(vstack(...parts), 0, 1, 0, 1);
 }
 
 /**
@@ -225,10 +240,18 @@ function composeRow(left: Cell[], right: Cell[], width: number): Frame {
   return { width, rows: [cells] };
 }
 
-/** Faint horizontal rule under the chrome — `cols-2` of `─`. */
-function chromeRuleFrame(width: number): Frame {
-  const w = Math.max(20, width - 2);
-  return text("─".repeat(w), { width, fg: COLOR.info, dim: true });
+/**
+ * Faint horizontal rule across the chrome's INNER width. The outer
+ * `chromeFrame` adds 1-cell side padding so this `─` line ends up
+ * 2 cells short of the terminal width, matching the original
+ * `<StatsPanel>` look.
+ */
+function chromeRuleInnerFrame(innerWidth: number): Frame {
+  return text("─".repeat(Math.max(20, innerWidth)), {
+    width: innerWidth,
+    fg: COLOR.info,
+    dim: true,
+  });
 }
 
 /**
