@@ -69,12 +69,6 @@ describe("eventToAtom — warning / error", () => {
 });
 
 describe("eventToAtom — fallback to ink", () => {
-  it("user role falls back to ink atom with rows estimate", () => {
-    const a = eventToAtom({ id: "u1", role: "user", text: "hi" }, undefined, W);
-    expect(a.kind).toBe("ink");
-    if (a.kind !== "ink") return;
-    expect(a.rows).toBeGreaterThan(0);
-  });
   it("plan role falls back to ink atom", () => {
     const a = eventToAtom({ id: "p1", role: "plan", text: "..." }, undefined, W);
     expect(a.kind).toBe("ink");
@@ -86,6 +80,112 @@ describe("eventToAtom — fallback to ink", () => {
       W,
     );
     expect(a.kind).toBe("ink");
+  });
+  it("ctx-breakdown falls back to ink atom", () => {
+    const a = eventToAtom(
+      {
+        id: "c1",
+        role: "ctx-breakdown",
+        text: "",
+        ctxBreakdown: {
+          ratio: 0.5,
+          sysTokens: 0,
+          prefixTokens: 0,
+          repairTokens: 0,
+          turnTokens: 0,
+          ctxMax: 1,
+          model: "x",
+          legend: [],
+        },
+      } as DisplayEvent,
+      undefined,
+      W,
+    );
+    expect(a.kind).toBe("ink");
+  });
+});
+
+describe("eventToAtom — user", () => {
+  it("produces frame atom with cyan glyph", () => {
+    const a = eventToAtom({ id: "u1", role: "user", text: "hello" }, undefined, W);
+    expect(a.kind).toBe("frame");
+    if (a.kind !== "frame") return;
+    expect(rowText(a.frame.rows[0]!)).toContain("◇");
+    expect(rowText(a.frame.rows[0]!)).toContain("hello");
+  });
+  it("wraps long user input across rows, accent bar on every row", () => {
+    const long = "x".repeat(200);
+    const a = eventToAtom({ id: "u1", role: "user", text: long }, undefined, W);
+    if (a.kind !== "frame") throw new Error("expected frame");
+    expect(a.frame.rows.length).toBeGreaterThan(2);
+    // Every row has a non-empty body
+    for (const r of a.frame.rows) {
+      let visible = 0;
+      for (const c of r) if (!c.tail) visible += c.width;
+      expect(visible).toBe(a.frame.width);
+    }
+  });
+  it("includes turn separator when leadSeparator set", () => {
+    const a = eventToAtom(
+      { id: "u1", role: "user", text: "hi", leadSeparator: true } as DisplayEvent,
+      undefined,
+      W,
+    );
+    if (a.kind !== "frame") throw new Error("expected frame");
+    // Should have AT LEAST 2 rows: separator + body
+    expect(a.frame.rows.length).toBeGreaterThanOrEqual(2);
+    // First row contains the brand mark
+    expect(rowText(a.frame.rows[0]!)).toContain("◆");
+  });
+});
+
+describe("eventToAtom — tool compact", () => {
+  it("produces frame atom for non-error tool with cyan pill", () => {
+    const a = eventToAtom(
+      {
+        id: "t1",
+        role: "tool",
+        text: "ok",
+        toolName: "list_directory",
+        durationMs: 50,
+      } as DisplayEvent,
+      undefined,
+      W,
+    );
+    expect(a.kind).toBe("frame");
+    if (a.kind !== "frame") return;
+    const row = rowText(a.frame.rows[0]!);
+    expect(row).toContain("list_directory");
+  });
+  it("error tool gets red pill", () => {
+    const a = eventToAtom(
+      { id: "t2", role: "tool", text: "ERROR: nope", toolName: "x" } as DisplayEvent,
+      undefined,
+      W,
+    );
+    if (a.kind !== "frame") throw new Error("expected frame");
+    // The pill cell should carry red foreground
+    const firstCell = a.frame.rows[0]!.find((c) => !c.tail && c.char !== "│" && c.char !== " ");
+    expect(firstCell?.fg).toBe("red");
+  });
+});
+
+describe("eventToAtom — edit_file diff", () => {
+  it("produces multi-row frame for edit_file tool", () => {
+    const text =
+      "edited foo.ts (10→12 chars)\n@@ -1,2 +1,2 @@\n  - oldline\n  + newline\n  context";
+    const a = eventToAtom(
+      { id: "ef1", role: "tool", text, toolName: "edit_file" } as DisplayEvent,
+      undefined,
+      W,
+    );
+    expect(a.kind).toBe("frame");
+    if (a.kind !== "frame") return;
+    expect(a.frame.rows.length).toBeGreaterThan(3);
+    // The diff body lines should include - and + markers
+    const allText = a.frame.rows.map(rowText).join("\n");
+    expect(allText).toContain("−"); // removal glyph
+    expect(allText).toContain("+");
   });
 });
 
@@ -124,16 +224,17 @@ describe("viewportLog — basic slicing", () => {
 
 describe("viewportLog — mixed frame + ink atoms", () => {
   it("snaps at ink atom boundaries (no row-precise topSkip)", () => {
-    // 1-row info + 5-row ink + 1-row info = 7 rows
+    // 1-row info + ink-fallback (plan role, ~10 rows) + 1-row info
     const atoms = [
       eventToAtom(infoEvent("first", "i0"), undefined, W),
-      eventToAtom({ id: "u0", role: "user", text: "x".repeat(100) }, undefined, W),
+      eventToAtom({ id: "p0", role: "plan", text: "..." } as DisplayEvent, undefined, W),
       eventToAtom(infoEvent("last", "i1"), undefined, W),
     ];
     // Viewport = 4 rows, offset = 0 → last 4 rows: tail of ink + last info
     const v = viewportLog(atoms, 0, 4);
-    // First atom in slice should be the ink one (since viewport starts mid-ink)
-    // but topSkip stays 0 because ink atoms don't support row-precise clip.
+    // First atom in slice should be the ink one (since viewport starts
+    // mid-ink) but topSkip stays 0 because ink atoms don't support
+    // row-precise clip.
     expect(v.atoms[0]!.kind).toBe("ink");
     expect(v.topSkip).toBe(0); // ink atoms snap; no clip
   });

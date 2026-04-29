@@ -47,16 +47,45 @@
 import { Box, Text } from "ink";
 import React from "react";
 import {
+  type Cell,
   type Frame,
   borderLeft,
   empty,
   frameToAnsi,
+  hstack,
   pad,
   text,
   vstack,
 } from "../../frame/index.js";
 import { type DisplayEvent, EventRow } from "./EventLog.js";
-import { COLOR } from "./theme.js";
+import { COLOR, GLYPH, gradientCells } from "./theme.js";
+import { formatDuration, summarizeToolResult } from "./tool-summary.js";
+
+const ROLE_GLYPH = {
+  user: "◇",
+  toolOk: GLYPH.toolOk,
+  toolErr: GLYPH.toolErr,
+} as const;
+
+const SPACE_CELL: Cell = { char: " ", width: 1 };
+
+/**
+ * Single-row frame from a horizontal sequence of pre-built 1-row
+ * frames. Concatenates cells, then either truncates (if total cells
+ * exceed `width`) or right-pads with spaces. Used for layouts that
+ * are conceptually one line of mixed-style segments — tool-compact
+ * pills, header rows, etc.
+ */
+function rowFrame(parts: readonly Frame[], width?: number): Frame {
+  const cells: Cell[] = [];
+  for (const p of parts) {
+    if (p.rows.length > 0) cells.push(...p.rows[0]!);
+  }
+  const w = width ?? cells.reduce((a, c) => a + (c.tail ? 0 : c.width), 0);
+  if (cells.length > w) cells.length = w;
+  while (cells.reduce((a, c) => a + (c.tail ? 0 : c.width), 0) < w) cells.push(SPACE_CELL);
+  return { width: w, rows: [cells] };
+}
 
 // ─── atom type ───────────────────────────────────────────────────
 
@@ -240,6 +269,214 @@ function simpleAssistantFrame(event: DisplayEvent, width: number): Frame {
   return vstack(...parts);
 }
 
+/**
+ * Decorative gradient rule with a centered `◆` brand mark, used as
+ * the lead separator before a fresh user turn. Mirrors the legacy
+ * `<TurnSeparator>` Ink component visually but composes from cells.
+ */
+function turnSeparatorFrame(width: number): Frame {
+  const w = Math.max(16, width - 2);
+  const sideWidth = Math.max(2, Math.floor((w - 5) / 2));
+  const left = gradientCells(sideWidth, "─");
+  const right = gradientCells(sideWidth, "─");
+  const sideCells = (cells: typeof left): Cell[] =>
+    cells.map(({ ch, color }) => ({ char: ch, width: 1, fg: color }));
+  const center: Cell[] = [
+    SPACE_CELL,
+    SPACE_CELL,
+    { char: "◆", width: 1, fg: COLOR.brand, bold: true },
+    SPACE_CELL,
+    SPACE_CELL,
+  ];
+  const totalUsed = sideWidth * 2 + 5;
+  const padLeft = Math.max(0, Math.floor((width - totalUsed) / 2));
+  const padRight = Math.max(0, width - totalUsed - padLeft);
+  const padCells = (n: number): Cell[] => Array.from({ length: n }, () => SPACE_CELL);
+  return {
+    width,
+    rows: [
+      [
+        ...padCells(padLeft),
+        ...sideCells(left),
+        ...center,
+        ...sideCells(right),
+        ...padCells(padRight),
+      ],
+    ],
+  };
+}
+
+/**
+ * Frame for `user` events. Renders as `◇  │ <text>` with the cyan
+ * accent bar continuing down every wrapped row. An optional turn
+ * separator (gradient rule) sits above when `event.leadSeparator`
+ * is set — that's the visual cue marking a fresh user turn after
+ * the previous assistant reply.
+ */
+function userFrame(event: DisplayEvent, width: number): Frame {
+  const indentWidth = 3; // glyph + 2 spaces
+  // Body width = total - glyph-indent - bar - inner padding.
+  const bodyInner = text(event.text, { width: Math.max(8, width - indentWidth - 2) });
+  const padded = pad(bodyInner, 0, 0, 0, 1);
+  const bordered = borderLeft(padded, COLOR.user);
+  // Build the indent column row-by-row: glyph in row 0, blanks elsewhere.
+  const indentRows: Frame[] = bordered.rows.map((_, i) =>
+    i === 0
+      ? text(`${ROLE_GLYPH.user}  `, { width: indentWidth, fg: "cyan", bold: true })
+      : text(" ".repeat(indentWidth), { width: indentWidth }),
+  );
+  const indentCol = vstack(...indentRows);
+  let body = hstack(indentCol, bordered);
+  if (event.leadSeparator) {
+    body = vstack(turnSeparatorFrame(width), body);
+  }
+  return body;
+}
+
+/**
+ * Frame for the COMPACT tool-result row: `[bar] [pill] [duration]
+ * [summary] [/tool index]`. Mirrors the legacy renderer's single
+ * yellow-bordered line; still uses summarize-tool-result for the
+ * body so the frame matches the previous visual.
+ */
+function toolCompactFrame(event: DisplayEvent, width: number): Frame {
+  const summary = summarizeToolResult(event.toolName ?? "?", event.text);
+  const status: "ok" | "err" = summary.isError ? "err" : "ok";
+  const symbol = status === "err" ? ROLE_GLYPH.toolErr : ROLE_GLYPH.toolOk;
+  const pillFg = status === "err" ? "red" : "cyan";
+  const accent = status === "err" ? COLOR.toolErr : COLOR.tool;
+  const innerWidth = width - 2; // bar + pad
+  const segments: Frame[] = [];
+  const pillText = `${symbol} ${event.toolName ?? "?"}`;
+  segments.push(text(pillText, { width: pillText.length, fg: pillFg, bold: true }));
+  if (event.durationMs !== undefined && event.durationMs >= 100) {
+    const dur = `  ${formatDuration(event.durationMs)}`;
+    segments.push(text(dur, { width: dur.length, dim: true }));
+  }
+  segments.push(text("  ", { width: 2, dim: true }));
+  // Summary takes the rest. Wrap-friendly: build at remaining budget.
+  const used = segments.reduce((a, p) => a + p.width, 0);
+  const indexHint = event.toolIndex !== undefined ? `  /tool ${event.toolIndex}` : "";
+  const summaryBudget = Math.max(8, innerWidth - used - indexHint.length);
+  segments.push(
+    text(summary.summary, {
+      width: summaryBudget,
+      fg: status === "err" ? "red" : undefined,
+      dim: status === "ok",
+    }),
+  );
+  if (indexHint) {
+    segments.push(text(indexHint, { width: indexHint.length, dim: true }));
+  }
+  // Tool summary may have wrapped to multiple rows — vstack each
+  // segment row, padding shorter columns. Easier path: render the
+  // summary frame independently and stack rows under the pill.
+  // For the v1 we just take the first row of each segment, keeping
+  // a one-line tool entry. Multi-line summaries truncate.
+  const inner = rowFrame(
+    segments.map((s) => ({ width: s.width, rows: [s.rows[0] ?? []] })),
+    innerWidth,
+  );
+  return borderLeft(pad(inner, 0, 0, 0, 1), accent);
+}
+
+/**
+ * Frame for `edit_file` tool results. The text payload is already
+ * a formatted unified diff produced by the loop:
+ *
+ *   line 0       — status header ("edited X (A→B chars)")
+ *   line 1       — hunk header ("@@ -N,M +N,M @@") with magenta pill bg
+ *   line 2..n    — diff body, each line prefixed with `  ` (context),
+ *                  `- ` (removal), or `+ ` (addition)
+ *
+ * The rendered frame puts a teal accent bar down the left of the
+ * whole block (matching the tool-result column style), with the
+ * pill header and gutter-glyph diff lines underneath.
+ */
+function editFileDiffFrame(event: DisplayEvent, width: number): Frame {
+  const lines = event.text.split(/\r?\n/);
+  const [statusHeader, hunkHeader, ...body] = lines;
+  const innerWidth = width - 2; // bar + pad
+  const parts: Frame[] = [];
+  // Header row — tool pill + "diff:" label
+  parts.push(
+    rowFrame(
+      [
+        text(`${ROLE_GLYPH.toolOk} ${event.toolName ?? "edit_file"}`, {
+          width: 2 + (event.toolName ?? "edit_file").length,
+          fg: "cyan",
+          bold: true,
+        }),
+        text("   diff:", { width: 8, dim: true }),
+      ],
+      innerWidth,
+    ),
+  );
+  // Status header (dim, leading space)
+  if (statusHeader !== undefined) {
+    parts.push(text(` ${statusHeader}`, { width: innerWidth, dim: true }));
+  }
+  // Spacer
+  parts.push(text("", { width: innerWidth }));
+  // Hunk header — magenta pill background. Trim because diffs sometimes
+  // include trailing whitespace.
+  if (hunkHeader !== undefined) {
+    const hunk = hunkHeader.trim();
+    parts.push(
+      rowFrame(
+        [
+          text(` ${hunk} `, {
+            width: hunk.length + 2,
+            bg: "#c4b5fd",
+            fg: "black",
+            bold: true,
+          }),
+        ],
+        innerWidth,
+      ),
+    );
+  }
+  // Body lines — strip the leading "  " indent the formatter adds and
+  // emit a colored gutter glyph + tinted text.
+  for (const line of body) {
+    const stripped = line.replace(/^ {2}/, "");
+    if (stripped.startsWith("- ")) {
+      parts.push(
+        rowFrame(
+          [
+            text("− ", { width: 2, fg: "#f87171", bold: true }),
+            text(stripped.slice(2), { width: innerWidth - 2, fg: "#fca5a5" }),
+          ],
+          innerWidth,
+        ),
+      );
+    } else if (stripped.startsWith("+ ")) {
+      parts.push(
+        rowFrame(
+          [
+            text("+ ", { width: 2, fg: "#4ade80", bold: true }),
+            text(stripped.slice(2), { width: innerWidth - 2, fg: "#86efac" }),
+          ],
+          innerWidth,
+        ),
+      );
+    } else {
+      // Context — dim
+      parts.push(
+        rowFrame(
+          [
+            text("  ", { width: 2, dim: true }),
+            text(stripped, { width: innerWidth - 2, dim: true }),
+          ],
+          innerWidth,
+        ),
+      );
+    }
+  }
+  const inner = vstack(...parts);
+  return borderLeft(pad(inner, 0, 0, 0, 1), COLOR.tool);
+}
+
 // ─── public surface ──────────────────────────────────────────────
 
 /**
@@ -267,6 +504,19 @@ export function eventToAtom(
   }
   if (event.role === "step-progress") {
     return { kind: "frame", id: event.id, frame: stepProgressFrame(event, width) };
+  }
+  if (event.role === "user") {
+    return { kind: "frame", id: event.id, frame: userFrame(event, width) };
+  }
+  if (event.role === "tool") {
+    const isExplicitError = event.text.startsWith("ERROR:");
+    const isEditFile =
+      (event.toolName === "edit_file" || event.toolName?.endsWith("_edit_file")) &&
+      !isExplicitError;
+    if (isEditFile) {
+      return { kind: "frame", id: event.id, frame: editFileDiffFrame(event, width) };
+    }
+    return { kind: "frame", id: event.id, frame: toolCompactFrame(event, width) };
   }
   if (event.role === "assistant" && !event.streaming) {
     const hasComplexSub =
