@@ -195,6 +195,17 @@ export class StdinReader {
   /** Buffer for paste content. */
   private pasteBuf = "";
   private escTimer: NodeJS.Timeout | null = null;
+  // Deferred-dispatch handle paired with `escTimer`. The timer
+  // queues an Immediate that runs in the event loop's CHECK phase —
+  // i.e. AFTER the POLL phase where stdin 'data' events fire — so
+  // a multi-byte sequence whose chunks queued up while the loop was
+  // blocked (heavy render, etc.) gets a chance to be processed
+  // BEFORE we emit a bogus standalone-Esc. Fixes the "I didn't press
+  // Esc but it aborted the turn" class of bug: previously the timer's
+  // setTimeout callback ran in the timers phase ahead of poll, so a
+  // split sequence like `\x1b` + `[A` would dispatch escape+upArrow
+  // even though the user only pressed Up.
+  private escImmediate: NodeJS.Immediate | null = null;
   private started = false;
   /** The actual `data` listener — kept as a field so `stop()` can detach it. */
   private listener: ((chunk: Buffer | string) => void) | null = null;
@@ -265,16 +276,29 @@ export class StdinReader {
       clearTimeout(this.escTimer);
       this.escTimer = null;
     }
+    if (this.escImmediate) {
+      clearImmediate(this.escImmediate);
+      this.escImmediate = null;
+    }
   }
 
   private scheduleEscTimer(): void {
     this.cancelEscTimer();
     this.escTimer = setTimeout(() => {
-      // Standalone Esc — no follow-up byte arrived in time.
-      if (this.state === "esc") {
-        this.state = "idle";
-        this.dispatch({ input: "", escape: true });
-      }
+      this.escTimer = null;
+      // Defer the actual dispatch to the CHECK phase so any pending
+      // stdin 'data' events that queued up during a long render still
+      // get a chance to consume the rest of a split sequence. The
+      // chunk handler cancels this Immediate at its start, so a
+      // sequence completing first wins; only a truly-orphaned `\x1b`
+      // reaches the dispatch below.
+      this.escImmediate = setImmediate(() => {
+        this.escImmediate = null;
+        if (this.state === "esc") {
+          this.state = "idle";
+          this.dispatch({ input: "", escape: true });
+        }
+      });
     }, ESC_TIMEOUT_MS);
   }
 

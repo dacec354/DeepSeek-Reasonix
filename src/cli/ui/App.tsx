@@ -83,6 +83,7 @@ import {
 } from "./edit-history.js";
 import { appendGlobalMemory, appendProjectMemory, detectHashMemory } from "./hash-memory.js";
 import { useKeystroke } from "./keystroke-context.js";
+import { BottomHint, ScrollBar, eventToItems, renderLogItem, sliceLogItems } from "./log-rows.js";
 import { formatLoopStatus } from "./loop.js";
 import { handleMcpBrowseSlash } from "./mcp-browse.js";
 import { formatLongPaste } from "./paste-collapse.js";
@@ -187,119 +188,6 @@ const PLAIN_UI = process.env.REASONIX_UI === "plain";
  * Single-line status pill rendered below the modeline whenever a /loop
  * is active. Re-renders every second so the countdown ticks.
  */
-/**
- * Given a list of historical events and the terminal's row count,
- * return the most-recent slice that fits in the middle log region.
- *
- * Why the rough estimates: Ink doesn't tell us each component's
- * rendered height before laying out. Even if it did, EventLog has
- * conditional sub-blocks (R1 reasoning, plan-state, branch summary)
- * whose heights vary turn-by-turn. Estimating by role is cheap and
- * close-enough — and the parent Box's `overflow="hidden"` clips any
- * underestimate so the prompt never gets pushed off-screen.
- *
- * Heights chosen by inspection:
- *   - user             ≈ 3 + 1 per 80-char wrap     (left-bar card)
- *   - assistant        ≈ 4 + 1 per 80-char wrap     (left-bar card +
- *                                                    optional R1 head)
- *   - tool (compact)   ≈ 2                          (left-bar single
- *                                                    line, sometimes 2)
- *   - tool (edit_file) ≈ 6 + diff lines             (header + diff)
- *   - info / warn / err≈ 1 (single row)
- *   - plan / plan-replay ≈ 8                        (multi-step list)
- *   - ctx-breakdown    ≈ 6                          (4 lines + legend)
- */
-/**
- * Estimate the rendered height (rows) of a single event. Numbers are
- * deliberate over-estimates so the slicer leans toward "render less"
- * rather than "render more and clip" — under-counting is the worse
- * failure mode because it means events crowd into the viewport and the
- * overflow="hidden" wrapper silently swallows the bottom of the latest
- * event (the user just sees a truncated message and assumes a bug).
- */
-function heightOfEvent(e: DisplayEvent): number {
-  const text = e.text ?? "";
-  const wrapLines = Math.max(0, Math.floor(text.length / 80));
-  if (e.role === "user") return 3 + wrapLines;
-  if (e.role === "assistant") {
-    let h = 4 + wrapLines;
-    if (e.reasoning) h += 3;
-    if (e.branch) h += 4;
-    return h;
-  }
-  if (e.role === "tool") {
-    const isEditFile = e.toolName === "edit_file" || e.toolName?.endsWith("_edit_file");
-    if (isEditFile) {
-      const diffLines = (text.match(/\n/g)?.length ?? 0) + 1;
-      return 6 + Math.min(20, diffLines);
-    }
-    return 2;
-  }
-  if (e.role === "info" || e.role === "warning") return 2;
-  if (e.role === "error") return 2 + wrapLines;
-  if (e.role === "plan" || e.role === "plan-replay" || e.role === "plan-resumed") return 10;
-  if (e.role === "ctx-breakdown") return 7;
-  if (e.role === "step-progress") return 1;
-  return 2;
-}
-
-interface VisibleSlice {
-  events: DisplayEvent[];
-  /** Highest valid scroll offset (events). The caller clamps with this. */
-  maxScrollEvents: number;
-}
-
-/**
- * Event-granular log slicer. `scrollOffset` is events-from-the-bottom
- * (0 = newest events at the bottom of the viewport). At offset=0 the
- * caller pairs this with `justifyContent="flex-end"` so a tall LATEST
- * event bottom-anchors and the user sees the END of the long content
- * (the part the model just produced). Scrolling up flips the renderer
- * to top-aligned so the user can read the start of older events.
- *
- * Row-level scrolling within a single tall event is a follow-up — it
- * needs every event role to expose a row-list representation, which
- * is a larger refactor (tracked separately). Until then, event-granular
- * keeps the chrome intact (no negative marginTop, which Ink's
- * overflow="hidden" doesn't clip reliably) and gives both ends of long
- * content via offset-mode switching.
- */
-function sliceVisibleEvents(
-  events: readonly DisplayEvent[],
-  termRows: number,
-  scrollOffset = 0,
-): VisibleSlice {
-  // Reserve rows for: chrome (StatsPanel + rule, ~3) + prompt area
-  // (~5: prompt + hint + suggestions buffer) + safety margin (~2).
-  const reservedRows = 10;
-  const available = Math.max(8, termRows - reservedRows);
-
-  if (events.length === 0) {
-    return { events: [], maxScrollEvents: 0 };
-  }
-
-  const maxScrollEvents = Math.max(0, events.length - 1);
-  const offset = Math.max(0, Math.min(scrollOffset, maxScrollEvents));
-  const endIdx = events.length - offset;
-  // Always include at least the bottom-most event in the window even
-  // if it would overflow alone — `overflow="hidden"` on the parent
-  // clips the excess; with `justifyContent="flex-end"` (offset=0) the
-  // clipping happens at the TOP so the user sees the BOTTOM of the
-  // latest tall event. Rendering nothing because one event is too tall
-  // is the worse failure mode.
-  let startIdx = endIdx - 1;
-  let used = heightOfEvent(events[startIdx]!);
-  for (let i = endIdx - 2; i >= 0; i--) {
-    const h = heightOfEvent(events[i]!);
-    if (used + h > available) break;
-    used += h;
-    startIdx = i;
-  }
-  return {
-    events: events.slice(startIdx, endIdx),
-    maxScrollEvents,
-  };
-}
 
 function LoopStatusRow({
   loop,
@@ -365,6 +253,15 @@ export function App({
   const scrollAnimRef = useRef<NodeJS.Timeout | null>(null);
   const scrollTargetRef = useRef<number>(0);
   const scrollDisplayedRef = useRef<number>(0);
+  // Row-pipeline mirrors. The slicer fills these on every render so
+  // the keystroke handler can clamp scroll inputs without recomputing
+  // event row counts.
+  const scrollMaxRowsRef = useRef<number>(0);
+  // Cumulative row count over `historical` from the previous render —
+  // used by the append-anchor effect below to bump `scrollTargetRef`
+  // by the row-delta (not event-delta) when content arrives while the
+  // user is scrolled up.
+  const lastTotalRowsRef = useRef<number>(0);
   useEffect(() => {
     return () => {
       if (scrollAnimRef.current) {
@@ -412,25 +309,40 @@ export function App({
     /* animateScrollTo handles its own teardown on each new target */
   }, []);
   // Anchor + clamp the visible window when historical changes:
-  //   · GROWS while user is scrolled up — bump offset by `delta` (event
-  //     count) so the same events stay framed. Without this, every
-  //     appended turn slides the window forward by one and pushes what
-  //     the user was reading off-screen.
-  //   · SHRINKS (e.g. /new wipes log) — clamp offset to the new max so
-  //     we never point past the new end. Otherwise the user sees an
-  //     empty middle box even though there are events to show.
+  //   · GROWS while the user is scrolled up — bump offset by the ROWS
+  //     of newly-appended content so the same lines stay framed.
+  //     Without this, every appended turn slides the window forward
+  //     and pushes what the user was reading off-screen. Row-deltas
+  //     are exact (computed from the row pipeline) so a 50-row diff
+  //     bumps the offset by 50, not 1.
+  //   · SHRINKS (e.g. /new wipes log) — clamp offset to the slicer's
+  //     new `maxScrollRows`. Otherwise the user is left looking at an
+  //     empty middle.
   const lastHistoricalLenRef = useRef(0);
   useEffect(() => {
-    const prev = lastHistoricalLenRef.current;
-    const cur = historical.length;
-    lastHistoricalLenRef.current = cur;
-    if (cur > prev && scrollTargetRef.current > 0) {
-      const delta = cur - prev;
-      scrollTargetRef.current += delta;
-      scrollDisplayedRef.current += delta;
-      setLogScrollOffset((p) => p + delta);
-    } else if (cur < prev) {
-      const newMax = Math.max(0, cur - 1);
+    const prevLen = lastHistoricalLenRef.current;
+    const curLen = historical.length;
+    lastHistoricalLenRef.current = curLen;
+    if (curLen > prevLen && scrollTargetRef.current > 0) {
+      // Row-deltas: convert each newly-appended event to its row
+      // pipeline and sum the rows. Exact, regardless of role. The
+      // projectRoot + width args only matter when the row item is
+      // RENDERED; we're only counting here, so undefined / default
+      // width is fine for the delta sum.
+      const cols = stdout?.columns ?? 80;
+      let deltaRows = 0;
+      for (let i = prevLen; i < curLen; i++) {
+        for (const it of eventToItems(historical[i]!, undefined, cols)) {
+          deltaRows += it.kind === "row" ? 1 : it.rows;
+        }
+      }
+      if (deltaRows > 0) {
+        scrollTargetRef.current += deltaRows;
+        scrollDisplayedRef.current += deltaRows;
+        setLogScrollOffset((p) => p + deltaRows);
+      }
+    } else if (curLen < prevLen) {
+      const newMax = scrollMaxRowsRef.current;
       if (scrollTargetRef.current > newMax) {
         scrollTargetRef.current = newMax;
         scrollDisplayedRef.current = newMax;
@@ -438,6 +350,23 @@ export function App({
       }
     }
   }, [historical]);
+  // Belt-and-suspenders clamp: if `logScrollOffset` ever ends up past
+  // the slicer's `maxScrollRows` (terminal resize, role-rendering
+  // height changes mid-stream, anything that perturbs the row total),
+  // snap it back. Without this the user can wheel into "empty
+  // viewport" territory because the row-pipeline's `LogBlock` height
+  // estimates can drift from what's actually rendered. The slicer
+  // itself clamps internally for picking items, but the React state
+  // (which the ScrollBar reads) must mirror the same upper bound or
+  // the thumb shows a confusing "scrolling past content" position.
+  useEffect(() => {
+    const max = scrollMaxRowsRef.current;
+    if (logScrollOffset > max) {
+      scrollTargetRef.current = max;
+      scrollDisplayedRef.current = max;
+      setLogScrollOffset(max);
+    }
+  }, [logScrollOffset]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   // Tracks whether the current turn has been aborted via Esc, so the
@@ -1434,32 +1363,35 @@ export function App({
     }
     // Log-scroll keys + mouse wheel — fire ahead of any PromptInput
     // consumption so the user can read history while the input is
-    // focused. Scroll unit is EVENTS (one log entry per tick); to see
-    // the BOTTOM of a tall latest event the caller pairs offset=0 with
-    // `justifyContent="flex-end"` so the latest content bottom-anchors
-    // and the top of the long entry naturally clips above the viewport.
-    //   · wheel tick   →  1 event
-    //   · PgUp / PgDn  →  3 events
-    //   · Home / End   →  oldest / newest
-    const maxOffset = Math.max(0, historical.length - 1);
+    // focused. Scroll unit is ROWS (lines), not events: a single tall
+    // entry — long assistant reply, big diff — can be wheeled through
+    // one piece at a time. Step sizes match OS conventions:
+    //   · wheel tick    →  3 rows  (matches Linux/Mac line-step)
+    //   · PgUp / PgDn   →  ~viewport, leaving a 2-row overlap so the
+    //                       reader doesn't lose context across a jump
+    //   · Home / End    →  oldest / newest
+    // `maxScrollRows` is set by the slicer on every render and lives
+    // in a ref so this handler doesn't have to recompute heights.
+    const maxOffset = scrollMaxRowsRef.current;
+    const viewportRows = Math.max(8, (stdout?.rows ?? 30) - 10);
     if (ev.mouseScrollUp) {
-      if (maxOffset === 0) return;
-      animateScrollTo((prev) => Math.min(maxOffset, prev + 1));
-      return;
-    }
-    if (ev.mouseScrollDown) {
-      if (maxOffset === 0) return;
-      animateScrollTo((prev) => Math.max(0, prev - 1));
-      return;
-    }
-    if (ev.pageUp) {
       if (maxOffset === 0) return;
       animateScrollTo((prev) => Math.min(maxOffset, prev + 3));
       return;
     }
-    if (ev.pageDown) {
+    if (ev.mouseScrollDown) {
       if (maxOffset === 0) return;
       animateScrollTo((prev) => Math.max(0, prev - 3));
+      return;
+    }
+    if (ev.pageUp) {
+      if (maxOffset === 0) return;
+      animateScrollTo((prev) => Math.min(maxOffset, prev + (viewportRows - 2)));
+      return;
+    }
+    if (ev.pageDown) {
+      if (maxOffset === 0) return;
+      animateScrollTo((prev) => Math.max(0, prev - (viewportRows - 2)));
       return;
     }
     if (ev.home) {
@@ -4273,16 +4205,12 @@ export function App({
               behind a confirm dialog is rarely useful, and rendering
               both fights for the same vertical space. */}
           <Box
-            flexDirection="column"
-            // At offset=0 we want the LATEST event's bottom flush with
-            // the bottom of the viewport so a tall final entry shows
-            // its END (the most-recent rows the model just produced),
-            // with overflow="hidden" naturally clipping the top above
-            // the viewport. When the user has scrolled up (offset>0)
-            // we revert to top-anchored so the start of the slice
-            // aligns with the top of the viewport — that's the natural
-            // "reading older content" mode.
-            justifyContent={logScrollOffset === 0 ? "flex-end" : "flex-start"}
+            // Outer row-flex wrapper: log content on the left (flexGrow=1)
+            // + a 1-cell ScrollBar on the right that shows the user's
+            // current vertical position within the row-flattened log.
+            // Height is shared by both children, modal-active collapses
+            // both to 0 so the modal owns the screen.
+            flexDirection="row"
             height={
               pendingShell ||
               pendingWorkspace ||
@@ -4300,96 +4228,115 @@ export function App({
             }
             overflow="hidden"
           >
-            {(() => {
-              const slice = sliceVisibleEvents(historical, stdout?.rows ?? 30, logScrollOffset);
-              return (
-                <>
-                  {slice.events.map((item) => (
-                    <EventRow key={item.id} event={item} projectRoot={currentRootDir} />
-                  ))}
-                </>
-              );
-            })()}
-            {/*
+            <Box flexDirection="column" flexGrow={1} overflow="hidden">
+              <Box
+                flexDirection="column"
+                flexGrow={1}
+                // At offset=0 we want the LATEST event's bottom flush with
+                // the bottom of the viewport so a tall final entry shows
+                // its END (the most-recent rows the model just produced),
+                // with overflow="hidden" naturally clipping the top above
+                // the viewport. When the user has scrolled up (offset>0)
+                // we revert to top-anchored so the start of the slice
+                // aligns with the top of the viewport — that's the natural
+                // "reading older content" mode.
+                justifyContent={logScrollOffset === 0 ? "flex-end" : "flex-start"}
+                overflow="hidden"
+              >
+                {(() => {
+                  const reservedRows = 10;
+                  const available = Math.max(8, (stdout?.rows ?? 30) - reservedRows);
+                  const cols = stdout?.columns ?? 80;
+                  // Build flat row list across all events, slice by row offset.
+                  // Migrated roles (info / warn / error / step-progress /
+                  // assistant) produce 1-row LogRows; everything else falls
+                  // back to a multi-row LogBlock wrapping <EventRow>.
+                  const items = historical.flatMap((e) => eventToItems(e, currentRootDir, cols));
+                  const slice = sliceLogItems(items, available, logScrollOffset);
+                  scrollMaxRowsRef.current = slice.maxScrollRows;
+                  lastTotalRowsRef.current = slice.totalRows;
+                  return <>{slice.items.map(renderLogItem)}</>;
+                })()}
+                {/*
           Welcome card on the empty state. Visible only when nothing
           has happened yet (no past events, nothing in flight, no
           modal up). Removes the "what do I type?" friction without
           surviving past the first turn.
         */}
-            {!historical.some((e) => e.role === "user" || e.role === "assistant") &&
-            !busy &&
-            !streaming ? (
-              <WelcomeBanner inCodeMode={!!codeMode} dashboardUrl={dashboardUrl} />
-            ) : null}
-            {/*
+                {!historical.some((e) => e.role === "user" || e.role === "assistant") &&
+                !busy &&
+                !streaming ? (
+                  <WelcomeBanner inCodeMode={!!codeMode} dashboardUrl={dashboardUrl} />
+                ) : null}
+                {/*
           Live rows are hidden while the ShellConfirm modal is up — the
           model's concurrent "please confirm" stream is noise the user
           doesn't need, and the picker shouldn't fight it for visual
           attention. They come back naturally once the user chooses and
           the next turn begins.
         */}
-            {!PLAIN_UI &&
-            !pendingShell &&
-            !pendingWorkspace &&
-            !pendingPlan &&
-            !stagedInput &&
-            !pendingEditReview &&
-            !pendingCheckpoint &&
-            !stagedCheckpointRevise &&
-            streaming ? (
-              <Box marginY={1}>
-                <EventRow event={streaming} projectRoot={currentRootDir} />
-              </Box>
-            ) : null}
-            {!PLAIN_UI &&
-            !pendingShell &&
-            !pendingWorkspace &&
-            !pendingPlan &&
-            !stagedInput &&
-            !pendingEditReview &&
-            !pendingCheckpoint &&
-            !stagedCheckpointRevise &&
-            ongoingTool ? (
-              <OngoingToolRow tool={ongoingTool} progress={toolProgress} />
-            ) : null}
-            {!PLAIN_UI &&
-            !pendingShell &&
-            !pendingWorkspace &&
-            !pendingPlan &&
-            !stagedInput &&
-            !pendingEditReview &&
-            !pendingCheckpoint &&
-            !stagedCheckpointRevise &&
-            subagentActivity ? (
-              <SubagentRow activity={subagentActivity} />
-            ) : null}
-            {!PLAIN_UI &&
-            !pendingShell &&
-            !pendingWorkspace &&
-            !pendingPlan &&
-            !stagedInput &&
-            !pendingEditReview &&
-            !pendingCheckpoint &&
-            !stagedCheckpointRevise &&
-            !ongoingTool &&
-            statusLine ? (
-              <StatusRow text={statusLine} />
-            ) : null}
-            {!PLAIN_UI &&
-            undoBanner &&
-            !pendingShell &&
-            !pendingWorkspace &&
-            !pendingPlan &&
-            !stagedInput &&
-            !pendingEditReview &&
-            !pendingCheckpoint &&
-            !stagedCheckpointRevise &&
-            !pendingChoice &&
-            !stagedChoiceCustom &&
-            !pendingRevision ? (
-              <UndoBanner banner={undoBanner} />
-            ) : null}
-            {/*
+                {!PLAIN_UI &&
+                !pendingShell &&
+                !pendingWorkspace &&
+                !pendingPlan &&
+                !stagedInput &&
+                !pendingEditReview &&
+                !pendingCheckpoint &&
+                !stagedCheckpointRevise &&
+                streaming ? (
+                  <Box marginY={1}>
+                    <EventRow event={streaming} projectRoot={currentRootDir} />
+                  </Box>
+                ) : null}
+                {!PLAIN_UI &&
+                !pendingShell &&
+                !pendingWorkspace &&
+                !pendingPlan &&
+                !stagedInput &&
+                !pendingEditReview &&
+                !pendingCheckpoint &&
+                !stagedCheckpointRevise &&
+                ongoingTool ? (
+                  <OngoingToolRow tool={ongoingTool} progress={toolProgress} />
+                ) : null}
+                {!PLAIN_UI &&
+                !pendingShell &&
+                !pendingWorkspace &&
+                !pendingPlan &&
+                !stagedInput &&
+                !pendingEditReview &&
+                !pendingCheckpoint &&
+                !stagedCheckpointRevise &&
+                subagentActivity ? (
+                  <SubagentRow activity={subagentActivity} />
+                ) : null}
+                {!PLAIN_UI &&
+                !pendingShell &&
+                !pendingWorkspace &&
+                !pendingPlan &&
+                !stagedInput &&
+                !pendingEditReview &&
+                !pendingCheckpoint &&
+                !stagedCheckpointRevise &&
+                !ongoingTool &&
+                statusLine ? (
+                  <StatusRow text={statusLine} />
+                ) : null}
+                {!PLAIN_UI &&
+                undoBanner &&
+                !pendingShell &&
+                !pendingWorkspace &&
+                !pendingPlan &&
+                !stagedInput &&
+                !pendingEditReview &&
+                !pendingCheckpoint &&
+                !stagedCheckpointRevise &&
+                !pendingChoice &&
+                !stagedChoiceCustom &&
+                !pendingRevision ? (
+                  <UndoBanner banner={undoBanner} />
+                ) : null}
+                {/*
           Belt-and-suspenders fallback: if we're busy but NONE of the
           specific indicators (streaming, ongoingTool, statusLine) is
           visible, something is still happening — show a generic
@@ -4397,20 +4344,37 @@ export function App({
           without a label. Catches micro-gaps between events that the
           targeted status lines don't cover.
         */}
-            {!PLAIN_UI &&
-            !pendingShell &&
-            !pendingWorkspace &&
-            !pendingPlan &&
-            !stagedInput &&
-            !pendingEditReview &&
-            !pendingCheckpoint &&
-            !stagedCheckpointRevise &&
-            busy &&
-            !streaming &&
-            !ongoingTool &&
-            !statusLine ? (
-              <StatusRow text="processing…" />
-            ) : null}
+                {!PLAIN_UI &&
+                !pendingShell &&
+                !pendingWorkspace &&
+                !pendingPlan &&
+                !stagedInput &&
+                !pendingEditReview &&
+                !pendingCheckpoint &&
+                !stagedCheckpointRevise &&
+                busy &&
+                !streaming &&
+                !ongoingTool &&
+                !statusLine ? (
+                  <StatusRow text="processing…" />
+                ) : null}
+              </Box>
+              {/* Sticky bottom-of-viewport hint when the user has scrolled
+                up — points to how many rows of newer content they're
+                missing and how to jump back. Hidden at offset=0 since
+                there's nothing below to point to. */}
+              <BottomHint rowsBelow={logScrollOffset} />
+            </Box>
+            {/* Vertical scrollbar — fills the same height as the log
+                region. Reads scroll position from the refs the slicer
+                fills synchronously inside the IIFE above, so the thumb
+                is always in sync with what's just been rendered. */}
+            <ScrollBar
+              height={Math.max(5, (stdout?.rows ?? 30) - 9)}
+              totalRows={lastTotalRowsRef.current}
+              viewportRows={Math.max(8, (stdout?.rows ?? 30) - 10)}
+              scrollOffsetRows={logScrollOffset}
+            />
           </Box>
           {/* STICKY BOTTOM — either an active modal (replaces prompt
               for the duration of the confirm) or the input + suggestion
