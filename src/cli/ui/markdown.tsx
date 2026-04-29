@@ -830,7 +830,7 @@ interface TableBlock {
   rows: string[][];
 }
 
-type Block =
+export type Block =
   | ParagraphBlock
   | HeadingBlock
   | BulletBlock
@@ -839,6 +839,16 @@ type Block =
   | HrBlock
   | EditBlockView
   | TableBlock;
+export type {
+  ParagraphBlock,
+  HeadingBlock,
+  BulletBlock,
+  BlockquoteBlock,
+  CodeBlock,
+  HrBlock,
+  EditBlockView,
+  TableBlock,
+};
 
 export function parseBlocks(raw: string): Block[] {
   const lines = raw.split(/\r?\n/);

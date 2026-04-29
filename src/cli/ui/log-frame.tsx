@@ -60,6 +60,7 @@ import {
 import { type TypedPlanState, isPlanStateEmpty } from "../../harvest.js";
 import type { BranchSummary } from "../../loop.js";
 import { type DisplayEvent, EventRow } from "./EventLog.js";
+import { markdownToFrame } from "./markdown-frame.js";
 import { COLOR, GLYPH, gradientCells } from "./theme.js";
 import { formatDuration, summarizeToolResult } from "./tool-summary.js";
 
@@ -248,14 +249,18 @@ function simpleAssistantFrame(event: DisplayEvent, width: number): Frame {
       rows: [[...glyph.rows[0]!, ...gap.rows[0]!, ...badge.rows[0]!]],
     };
   }
-  // Body — accent-bar bordered rows, plain text wrap.
-  const bodyText = event.text || "(empty body — likely tool-call only)";
-  const bodyDim = !event.text;
-  const bodyInner = text(bodyText, {
-    width: width - 1 - 2 /* bar + 2 indent */,
-    fg: COLOR.assistant,
-    dim: bodyDim,
-  });
+  // Body — accent-bar bordered rows. Markdown is parsed via the
+  // markdown-frame compiler so inline bold / italic / code / links
+  // and block-level headings / lists / code blocks render with
+  // proper styling. Empty body falls back to a dim placeholder.
+  const bodyInnerWidth = width - 1 - 2; // bar + 2 indent
+  const bodyInner = event.text
+    ? markdownToFrame(event.text, bodyInnerWidth)
+    : text("(empty body — likely tool-call only)", {
+        width: bodyInnerWidth,
+        fg: COLOR.assistant,
+        dim: true,
+      });
   const bodyIndented = pad(bodyInner, 0, 0, 0, 2);
   const bodyBordered = borderLeft(bodyIndented, COLOR.assistant);
   // Optional repair note: 1 row, indented under body.
@@ -737,11 +742,18 @@ function complexAssistantFrame(event: DisplayEvent, width: number): Frame {
   if (event.planState && !isPlanStateEmpty(event.planState)) {
     bodyParts.push(planStateFrame(event.planState, bodyWidth));
   }
-  // Body text — plain (no markdown for now). Lossy: code blocks /
-  // bold spans render as plain. Trade for row-precise scrolling.
-  const bodyText = event.text || "(empty body — likely tool-call only)";
-  const bodyDim = !event.text;
-  bodyParts.push(text(bodyText, { width: bodyWidth, fg: COLOR.assistant, dim: bodyDim }));
+  // Body text — markdown-compiled so bold / italic / code / links /
+  // headings / lists / code blocks render with their styling.
+  // Empty body falls back to a dim placeholder.
+  bodyParts.push(
+    event.text
+      ? markdownToFrame(event.text, bodyWidth)
+      : text("(empty body — likely tool-call only)", {
+          width: bodyWidth,
+          fg: COLOR.assistant,
+          dim: true,
+        }),
+  );
   // Stats line
   if (event.stats) {
     const hit = (event.stats.cacheHitRatio * 100).toFixed(1);
@@ -764,9 +776,9 @@ function complexAssistantFrame(event: DisplayEvent, width: number): Frame {
 }
 
 /**
- * Frame for `plan` events. Header bar + plain-text body (markdown
- * rendering is deferred — for now, the `plan` body is shown as
- * unformatted text so users can scroll through it row-by-row).
+ * Frame for `plan` events. Header bar + markdown-compiled body, so
+ * the model's plan proposal renders with proper inline styling and
+ * bullet lists.
  */
 function planFrame(event: DisplayEvent, width: number): Frame {
   const header = text("📋 plan proposed — pick a choice below", {
@@ -775,7 +787,7 @@ function planFrame(event: DisplayEvent, width: number): Frame {
     bold: true,
   });
   const headerPadded = rowFrame([header], width);
-  const body = text(event.text, { width: width - 2 });
+  const body = markdownToFrame(event.text, width - 2);
   const inner = vstack(headerPadded, text("", { width }), pad(body, 0, 0, 0, 1));
   // marginY={1} on outer
   const spacer = text("", { width });
