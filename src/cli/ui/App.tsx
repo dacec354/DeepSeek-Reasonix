@@ -70,17 +70,18 @@ import { PromptInput } from "./PromptInput.js";
 import { ShellConfirm, type ShellConfirmChoice, derivePrefix } from "./ShellConfirm.js";
 import { SlashArgPicker } from "./SlashArgPicker.js";
 import { SlashSuggestions } from "./SlashSuggestions.js";
-import { StatsPanel } from "./StatsPanel.js";
 import { WelcomeBanner } from "./WelcomeBanner.js";
 import { WorkspaceConfirm, type WorkspaceConfirmChoice } from "./WorkspaceConfirm.js";
 import { useAltScreen } from "./alt-screen.js";
 import { detectBangCommand, formatBangUserMessage } from "./bang.js";
+import { chromeFrame } from "./chrome-frame.js";
 import {
   describeRepair,
   formatEditResults,
   formatPendingPreview,
   partitionEdits,
 } from "./edit-history.js";
+import { renderFrame } from "./frame-render.js";
 import { appendGlobalMemory, appendProjectMemory, detectHashMemory } from "./hash-memory.js";
 import { useKeystroke } from "./keystroke-context.js";
 import { eventsToAtoms, renderViewport, viewportLog } from "./log-frame.js";
@@ -4174,24 +4175,22 @@ export function App({
           width={stdout?.columns ?? 80}
           overflow="hidden"
         >
-          <StatsPanel
-            summary={summary}
-            model={loop.model}
-            prefixHash={prefixHash}
-            harvestOn={loop.harvestEnabled}
-            branchBudget={loop.branchOptions.budget}
-            reasoningEffort={loop.reasoningEffort}
-            planMode={planMode}
-            editMode={codeMode ? editMode : undefined}
-            balance={balance}
-            busy={busy}
-            updateAvailable={updateAvailable}
-            proArmed={proArmed}
-            escalated={turnOnPro}
-            budgetUsd={loop.budgetUsd}
-            rootDir={codeMode ? currentRootDir : undefined}
-            sessionName={session ?? null}
-          />
+          {renderFrame(
+            chromeFrame({
+              summary,
+              width: stdout?.columns ?? 80,
+              planMode,
+              editMode: codeMode ? editMode : undefined,
+              balance,
+              updateAvailable,
+              proArmed,
+              escalated: turnOnPro,
+              budgetUsd: loop.budgetUsd,
+              rootDir: codeMode ? currentRootDir : undefined,
+              sessionName: session ?? null,
+            }),
+            "chrome",
+          )}
           {/* SCROLLABLE LOG REGION — historical events render inline
               (no Static, since alt-screen kills scrollback anyway).
               EXPLICIT height instead of `flexGrow={1}` so the height
